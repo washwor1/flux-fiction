@@ -1,4 +1,4 @@
-import logging 
+import logging
 logger = logging.getLogger(__name__)
 
 def get_loaded_modules(flux_handle):
@@ -135,31 +135,53 @@ def _load_config_object(config_source):
     )
 
 
-def _extract_qmanager_only_config(config_obj):
+def _extract_runtime_config(config_obj):
     """
-    Return a config object containing only the sched-fluxion-qmanager table.
+    Return the full config object that should be reloaded into Flux.
 
-    This avoids pushing any [resource] config that might interfere with
-    resource module args like noverify / monitor-force-up.
+    Flux Fiction may still inject ingest validator defaults, but all caller-
+    supplied config tables should be preserved when reloading modules.
     """
-    cfg = {}
-    qmgr = config_obj.get("sched-fluxion-qmanager")
-    if isinstance(qmgr, dict):
-        cfg["sched-fluxion-qmanager"] = copy.deepcopy(qmgr)
+    return copy.deepcopy(config_obj) if config_obj else {}
+
+
+def _with_default_ingest_validator_plugins(config_obj):
+    cfg = copy.deepcopy(config_obj) if config_obj else {}
+    ingest = cfg.setdefault("ingest", {})
+    validator = ingest.setdefault("validator", {})
+
+    plugins = validator.get("plugins")
+    if isinstance(plugins, list):
+        merged = ["feasibility", "jobspec"]
+        for plugin in plugins:
+            if isinstance(plugin, str) and plugin not in merged:
+                merged.append(plugin)
+        validator["plugins"] = merged
+    else:
+        validator["plugins"] = ["feasibility", "jobspec"]
+
     return cfg
+
+
+def _reload_job_ingest_config(flux_handle, config_payload, job_ingest_loaded):
+    if not job_ingest_loaded:
+        logger.debug("job-ingest not loaded; skipping explicit config reload")
+        return
+
+    flux_handle.rpc("job-ingest.config-reload", payload=config_payload).get()
 
 
 def reload_modules(flux_handle, config_source=None):
     """
     Reload resource + scheduler modules in the order:
 
-      Sched Unload -> Res Unload -> config.load(qmanager only)
+      Sched Unload -> Res Unload -> config.load(updated Flux config)
       -> Res Load(with raw args) -> Sched Load
 
     config_source may be:
       - dict from `flux config get`
       - path to a JSON file containing that object
-      - None (skip config.load entirely)
+      - None (load a minimal config enabling ingest feasibility validation)
     """
     sched_module = "sched-simple"
     sched_simple_path = None
@@ -167,6 +189,7 @@ def reload_modules(flux_handle, config_source=None):
     fluxion_qmanager_path = None
     fluxion_resource_path = None
     feasibility_module_path = None
+    job_ingest_loaded = False
 
     # config_source = "/home/j/Desktop/flux/sc25_poster/flux-fiction/experiment_data/ff_traces/experiment_scheduler_easy_resdepth32_20260330_165549/flux_config.json"
 
@@ -184,6 +207,8 @@ def reload_modules(flux_handle, config_source=None):
             fluxion_qmanager_path = module["path"]
         elif "sched-fluxion-resource" in name:
             fluxion_resource_path = module["path"]
+        elif name == "job-ingest":
+            job_ingest_loaded = True
         elif name == "resource" or "resource" in name:
             resource_module_path = module["path"]
         elif "feasibility" in name:
@@ -226,27 +251,20 @@ def reload_modules(flux_handle, config_source=None):
         logger.error("Error removing modules: %s", e)
         raise
 
-    # 2. Load ONLY qmanager config, if provided
-    if config_source is not None:
-        try:
-            qmgr_cfg = _load_config_object(config_source)
-            # qmgr_cfg = _extract_qmanager_only_config(full_cfg)
-
-            if qmgr_cfg:
-                logger.debug(
-                    "Loading qmanager-only config via config.load:\n%s",
-                    json.dumps(qmgr_cfg, indent=2, sort_keys=True),
-                )
-                flux_handle.rpc("config.load", payload=qmgr_cfg).get()
-            else:
-                logger.warning(
-                    "No sched-fluxion-qmanager table found in config source; "
-                    "skipping config.load"
-                )
-
-        except Exception as e:
-            logger.error("Error loading qmanager-only config: %s", e)
-            raise
+    # 2. Reload the caller-supplied Flux config while keeping ingest
+    # feasibility validation enabled after the module restart.
+    try:
+        config_payload = _with_default_ingest_validator_plugins(
+            _extract_runtime_config(_load_config_object(config_source))
+        )
+        logger.debug(
+            "Loading Flux config via config.load:\n%s",
+            json.dumps(config_payload, indent=2, sort_keys=True),
+        )
+        flux_handle.rpc("config.load", payload=config_payload).get()
+    except Exception as e:
+        logger.error("Error loading Flux config: %s", e)
+        raise
 
     # 3. Reload resource + scheduler
     try: 
@@ -261,6 +279,8 @@ def reload_modules(flux_handle, config_source=None):
 
         flux_handle.rpc("module.load", payload={"path": fluxion_qmanager_path,
                                                 "args": []}).get()
+
+        _reload_job_ingest_config(flux_handle, config_payload, job_ingest_loaded)
 
         start_all_queues(flux_handle)
 

@@ -13,6 +13,35 @@ from . import watchers
 
 logger = logging.getLogger(__name__)
 
+
+def _coerce_bool(value):
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in ("1", "true", "yes", "ok"):
+            return True
+        if lowered in ("0", "false", "no"):
+            return False
+    return None
+
+
+def _infer_satisfiable(response, default=None):
+    if isinstance(response, dict):
+        for key in ("satisfiable", "feasible"):
+            if key in response:
+                value = _coerce_bool(response[key])
+                if value is not None:
+                    return value
+        if "errnum" in response:
+            try:
+                return int(response["errnum"]) == 0
+            except Exception:
+                pass
+    return default
+
 class FluxAdapter:
     def __init__(self) -> None:
         self._handle: flux.Flux | None = None
@@ -215,7 +244,7 @@ class FluxAdapter:
                     {"jobspec": jobspec_obj},
                 ).get()
                 return {
-                    "satisfiable": True,
+                    "satisfiable": _infer_satisfiable(response, default=True),
                     "method": method,
                     "response": _make_serializable(response),
                 }
@@ -232,7 +261,7 @@ class FluxAdapter:
                 },
             ).get()
             return {
-                "satisfiable": True,
+                "satisfiable": _infer_satisfiable(response, default=True),
                 "method": "sched-fluxion-resource.match",
                 "response": _make_serializable(response),
                 "attempts": attempts,
