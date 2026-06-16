@@ -2,6 +2,7 @@
 from collections import namedtuple
 from typing import Sequence
 import math
+import os
 import re
 from datetime import datetime, timedelta
 import csv
@@ -175,7 +176,15 @@ class Job(object):
 
 
     def _resource_sections_with_rabbit_storage(self, node_section):
+        force_top_slot = os.environ.get("FF_FORCE_TOP_LEVEL_RABBIT_SLOT", "").lower() in (
+            "1",
+            "true",
+            "yes",
+            "on",
+        )
         if self.rabbit_storage_request_count <= 0:
+            if force_top_slot:
+                return [create_slot("rabbit", 1, [node_section])]
             return [node_section]
 
         ssd_section = create_resource(
