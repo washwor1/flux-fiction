@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+from contextlib import nullcontext
 from datetime import datetime
 import importlib.util
 import json
@@ -19,6 +20,7 @@ import hashlib
 from typing import Any
 
 from flux_fiction.api.status import RunStatusWriter, utcnow_iso
+from flux_fiction.telemetry import TelemetryClient
 
 
 def repo_root() -> Path:
@@ -781,6 +783,7 @@ def main() -> int:
         return 0
 
     bridge_proc = None
+    harness_telemetry = None
     proc = None
     broker_watch = None
     detected_fatal_error: dict[str, str] = {}
@@ -827,37 +830,49 @@ def main() -> int:
                 raise RuntimeError(
                     "Timed out waiting for OpenTelemetry bridge socket at {}".format(otel_socket)
                 )
+            harness_telemetry = TelemetryClient(
+                str(otel_socket),
+                args.otel_service_name,
+                "python-harness",
+            )
 
         with stdout_log.open("w") as f:
-            proc = subprocess.Popen(
-                cmd,
-                cwd=ff_root,
-                env=env,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                errors="replace",
-                start_new_session=True,
-            )
-            broker_watch = threading.Thread(
-                target=_watch_broker_log_for_fatal_error,
-                args=(broker_log, proc, detected_fatal_error, run_root),
-                daemon=True,
-            )
-            broker_watch.start()
-            assert proc.stdout is not None
-            for line in proc.stdout:
-                if interrupted_reason is not None:
-                    break
-                f.write(line)
-                f.flush()
-                sys.stdout.write(line)
-            proc.wait()
+            with (
+                harness_telemetry.span("harness.flux_runtime", config_file=str(generated_config))
+                if harness_telemetry is not None
+                else nullcontext()
+            ):
+                proc = subprocess.Popen(
+                    cmd,
+                    cwd=ff_root,
+                    env=env,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                    errors="replace",
+                    start_new_session=True,
+                )
+                broker_watch = threading.Thread(
+                    target=_watch_broker_log_for_fatal_error,
+                    args=(broker_log, proc, detected_fatal_error, run_root),
+                    daemon=True,
+                )
+                broker_watch.start()
+                assert proc.stdout is not None
+                for line in proc.stdout:
+                    if interrupted_reason is not None:
+                        break
+                    f.write(line)
+                    f.flush()
+                    sys.stdout.write(line)
+                proc.wait()
     finally:
         for signum, previous in previous_handlers.items():
             signal.signal(signum, previous)
         if broker_watch is not None:
             broker_watch.join(timeout=1)
+        if harness_telemetry is not None:
+            harness_telemetry.close()
         if bridge_proc is not None:
             bridge_proc.terminate()
             try:

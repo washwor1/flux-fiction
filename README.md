@@ -300,9 +300,9 @@ Important notes:
 - `load_jobtap.sh` now prefers an already prepared Flux environment and only
   sources `/usr/local/bin/flux-dev-env.sh` as a fallback if `flux` is not
   already available.
-- `flux-fiction-run` defaults faketime to a run-local `faketime_stamp` file and
-  warns when it uses either an inherited `STAMPFILE` environment variable or
-  the run-local default path.
+- `flux-fiction-run` defaults faketime to a unique container-local temp stamp
+  file and warns when it uses either an inherited `STAMPFILE` environment
+  variable or the default temp-backed path.
 - The preferred development path is the Podman container because it keeps Flux,
   scheduler, Python, and native dependencies aligned.
 - A reusable sample manifest lives at

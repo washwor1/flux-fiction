@@ -58,6 +58,23 @@ static struct emulator *emulator_create(void) {
     return calloc(1, sizeof(struct emulator));
 }
 
+static void copy_cstr(char *dst, size_t dst_size, const char *src)
+{
+    if (!dst || dst_size == 0)
+        return;
+
+    if (!src) {
+        dst[0] = '\0';
+        return;
+    }
+
+    size_t len = strlen(src);
+    if (len >= dst_size)
+        len = dst_size - 1;
+    memcpy(dst, src, len);
+    dst[len] = '\0';
+}
+
 static void emulator_destroy(struct emulator *emu) {
     if (!emu) return;
     int saved = errno;
@@ -878,11 +895,15 @@ static void reset_cb(flux_t *h, flux_msg_handler_t *mh,
             if (sn && json_is_string(sn))
                 otel_service_name = json_string_value(sn);
             if (otel_socket) {
-                strncpy(otel_socket_buf, otel_socket, sizeof(otel_socket_buf) - 1);
+                copy_cstr(otel_socket_buf, sizeof(otel_socket_buf), otel_socket);
                 otel_socket = otel_socket_buf;
             }
             if (otel_service_name) {
-                strncpy(otel_service_name_buf, otel_service_name, sizeof(otel_service_name_buf) - 1);
+                copy_cstr(
+                    otel_service_name_buf,
+                    sizeof(otel_service_name_buf),
+                    otel_service_name
+                );
                 otel_service_name = otel_service_name_buf;
             }
             json_decref(root);
@@ -896,16 +917,22 @@ static void reset_cb(flux_t *h, flux_msg_handler_t *mh,
     emu->log_enabled = log_enabled;
     emu->otel_enabled = otel_enabled;
     if (otel_socket) {
-        strncpy(emu->otel_socket, otel_socket, sizeof(emu->otel_socket) - 1);
-        emu->otel_socket[sizeof(emu->otel_socket) - 1] = '\0';
+        copy_cstr(emu->otel_socket, sizeof(emu->otel_socket), otel_socket);
     } else {
         emu->otel_socket[0] = '\0';
     }
     if (otel_service_name) {
-        strncpy(emu->otel_service_name, otel_service_name, sizeof(emu->otel_service_name) - 1);
-        emu->otel_service_name[sizeof(emu->otel_service_name) - 1] = '\0';
+        copy_cstr(
+            emu->otel_service_name,
+            sizeof(emu->otel_service_name),
+            otel_service_name
+        );
     } else {
-        strncpy(emu->otel_service_name, "flux-fiction-jobtap", sizeof(emu->otel_service_name) - 1);
+        copy_cstr(
+            emu->otel_service_name,
+            sizeof(emu->otel_service_name),
+            "flux-fiction-jobtap"
+        );
     }
     if (emu->otel_enabled && emu->otel_socket[0] != '\0') {
         if (ff_otel_init(emu->otel_service_name, emu->otel_socket) < 0)
@@ -942,7 +969,11 @@ int flux_plugin_init (flux_plugin_t *p)
     emu->log_enabled = true;
     emu->otel_enabled = false;
     emu->otel_socket[0] = '\0';
-    strncpy(emu->otel_service_name, "flux-fiction-jobtap", sizeof(emu->otel_service_name) - 1);
+    copy_cstr(
+        emu->otel_service_name,
+        sizeof(emu->otel_service_name),
+        "flux-fiction-jobtap"
+    );
     emu->timestep = 0;
     emu->h = flux_jobtap_get_flux(p);
     if (!emu->h) {

@@ -35,6 +35,20 @@ static struct ff_otel_state g_otel = {
 
 static unsigned int g_send_error_count = 0;
 
+static char *ff_otel_strdup(const char *value)
+{
+    if (!value)
+        return NULL;
+
+    size_t len = strlen(value) + 1;
+    char *copy = malloc(len);
+    if (!copy)
+        return NULL;
+
+    memcpy(copy, value, len);
+    return copy;
+}
+
 static void ff_otel_disable(void)
 {
     if (g_otel.fd >= 0) {
@@ -114,7 +128,7 @@ ff_otel_span_t ff_otel_span_start(const char *name)
         return NULL;
 
     span->id = g_otel.next_id++;
-    span->name = strdup(name);
+    span->name = ff_otel_strdup(name);
     span->attrs = json_object();
     if (!span->name || !span->attrs) {
         if (span->attrs)

@@ -13,11 +13,15 @@ from flux_fiction.telemetry import telemetry as telemetry_module
 class _FakeSocket:
     def __init__(self):
         self.blocking = None
+        self.timeout = None
         self.sent = []
         self.closed = False
 
     def setblocking(self, value):
         self.blocking = value
+
+    def settimeout(self, value):
+        self.timeout = value
 
     def sendto(self, data, path):
         self.sent.append((data, path))
@@ -197,6 +201,7 @@ def test_bridge_open_close_and_summary_files(tmp_path: Path, monkeypatch):
     bridge._open()
     assert socket_path.exists()
     assert bridge._sock is not None
+    assert bridge._sock.gettimeout() == 0.25
     assert bridge._spans_file_handle is not None
     bridge._record_summary(
         {
@@ -272,11 +277,17 @@ def test_bridge_handle_start_end_and_run_cleanup(tmp_path: Path, monkeypatch):
         def __init__(self):
             self.calls = 0
             self.closed = False
+            self.timeout = None
+
+        def settimeout(self, value):
+            self.timeout = value
 
         def recv(self, _size):
             self.calls += 1
             if self.calls == 1:
                 return start_msg
+            if self.calls == 2:
+                raise socket.timeout()
             bridge.stop()
             return stop_msg
 
@@ -292,6 +303,70 @@ def test_bridge_handle_start_end_and_run_cleanup(tmp_path: Path, monkeypatch):
     assert bridge._provider.shutdown_called is True
     assert recv_socket.closed is True
     assert any(row["name"] == "linger" for row in bridge._summary_rows)
+
+
+def test_bridge_writes_summary_before_shutdown_failure(tmp_path: Path, monkeypatch):
+    _patch_bridge_dependencies(monkeypatch)
+    monkeypatch.setattr(bridge_module.time, "time_ns", lambda: 1_000_000)
+    monkeypatch.setattr(bridge_module.atexit, "register", lambda fn: fn)
+
+    class _ExplodingProvider(_FakeProvider):
+        def shutdown(self):
+            self.shutdown_called = True
+            raise RuntimeError("exporter hung")
+
+    monkeypatch.setattr(
+        bridge_module,
+        "TracerProvider",
+        lambda resource: _ExplodingProvider(resource),
+    )
+
+    summary_file = tmp_path / "summary.csv"
+    bridge = bridge_module.Bridge(
+        socket_path=str(tmp_path / "bridge.sock"),
+        endpoint="http://collector",
+        service_name="bridge-svc",
+        summary_file=str(summary_file),
+        spans_file=None,
+    )
+    bridge._summary_rows.append(
+        {
+            "service": "svc",
+            "source": "engine",
+            "name": "advance",
+            "span_id": "abc",
+            "start_ns": 100,
+            "end_ns": 1100,
+            "duration_ms": 1.0,
+            "attrs": {},
+        }
+    )
+
+    closed = {"value": False}
+    monkeypatch.setattr(bridge, "_close", lambda: closed.__setitem__("value", True))
+
+    class _StopSocket:
+        def __init__(self):
+            self.closed = False
+
+        def settimeout(self, _value):
+            return None
+
+        def recv(self, _size):
+            bridge.stop()
+            raise socket.timeout()
+
+        def close(self):
+            self.closed = True
+
+    stop_socket = _StopSocket()
+    monkeypatch.setattr(bridge, "_open", lambda: setattr(bridge, "_sock", stop_socket))
+
+    bridge.run()
+
+    assert summary_file.exists()
+    assert "advance" in summary_file.read_text(encoding="utf-8")
+    assert closed["value"] is True
 
 
 def test_bridge_main_wires_bridge_and_signals(monkeypatch, tmp_path: Path):
