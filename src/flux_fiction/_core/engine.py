@@ -121,20 +121,27 @@ def run(
         trace_file=config.job_traces,
     )
 
-    adapter.open(simulation)
+    run_span_id = simulation.telemetry.start_span(
+        "engine.run_total",
+        output_dir=config.output_dir,
+        trace_file=getattr(config, "job_traces", None),
+    )
 
-    adapter.install_resources(config)
-    adapter.reload_scheduler(config)
-    adapter.register_exec_service()
-    adapter.arm_watchers()
-    adapter.register_job_tracking()
+    with simulation.telemetry.span("engine.adapter_setup"):
+        adapter.open(simulation)
+        adapter.install_resources(config)
+        adapter.reload_scheduler(config)
+        adapter.register_exec_service()
+        adapter.arm_watchers()
+        adapter.register_job_tracking()
 
     # adapter.configure_backend(config, simulation.start_job)
 
     reader = models.SacctReader(config.job_traces, require_gpus=(config.ngpus and config.ngpus > 0))
-    
-    reader.validate_trace()
-    jobs = list(reader.read_trace())
+
+    with simulation.telemetry.span("engine.trace_load"):
+        reader.validate_trace()
+        jobs = list(reader.read_trace())
     simulation.jobs_total = len(jobs)
     simulation.write_status_snapshot(state="running")
 
@@ -143,42 +150,47 @@ def run(
     for idx, job in enumerate(jobs):
         job.trace_index = idx  
  
-    for job in jobs:
-        if raw_jobspec_override is not None:
-            job.set_jobspec_override(raw_jobspec_override)
-        else:
-            job.set_jobspec_shape(jobspec_shape)
-            job.set_rabbit_storage_shape(
-                rabbit_storage,
-                emit_dw=config.rabbit_storage_emit_dw,
-                name=config.rabbit_storage_name,
-            )
-            if config.exclusive:
-                job.set_exclusive(resource_cores_per_node, resource_gpus_per_node)
-    for job in jobs:
-        job.insert_apriori_events(simulation)
+    with simulation.telemetry.span("engine.prepare_jobs", jobs_total=len(jobs)):
+        for job in jobs:
+            if raw_jobspec_override is not None:
+                job.set_jobspec_override(raw_jobspec_override)
+            else:
+                job.set_jobspec_shape(jobspec_shape)
+                job.set_rabbit_storage_shape(
+                    rabbit_storage,
+                    emit_dw=config.rabbit_storage_emit_dw,
+                    name=config.rabbit_storage_name,
+                )
+                if config.exclusive:
+                    job.set_exclusive(resource_cores_per_node, resource_gpus_per_node)
+        for job in jobs:
+            job.insert_apriori_events(simulation)
     pbar = tqdm(total=len(jobs), desc="Jobs completed", unit="job", leave=True)
     simulation.progress = pbar
 
     # with tracer.start_as_current_span("simulation.advance"):
     try:
-        simulation.advance()
+        with simulation.telemetry.span("engine.prime_simulation"):
+            simulation.advance()
     except Exception as e:
         message = _finalize_failure(simulation) or str(e)
         logger.error("Simulation failed before reactor start: %s", message)
+        simulation.telemetry.end_span(run_span_id, state="failed", error=message)
         _close_progress(simulation)
         _close_adapter(adapter)
         simulation.telemetry.close()
         return EngineResult(ok=False, message=message)
 
     try:
-        adapter.start_reactor()
+        with simulation.telemetry.span("engine.reactor_run"):
+            adapter.start_reactor()
     except Exception as e:
         message = (
             _finalize_failure(simulation)
             or f"Error during simulation time: {e}"
         )
         logger.error("Reactor encountered an exception: %s", message)
+        simulation.telemetry.end_span(run_span_id, state="failed", error=message)
         _close_progress(simulation)
         _close_adapter(adapter)
         simulation.telemetry.close()
@@ -186,42 +198,43 @@ def run(
 
     if simulation.failed_reason:
         message = _finalize_failure(simulation)
+        simulation.telemetry.end_span(run_span_id, state="failed", error=message)
         _close_progress(simulation)
         _close_adapter(adapter)
         simulation.telemetry.close()
         return EngineResult(ok=False, message=message)
 
     try:
-        adapter.close()
+        with simulation.telemetry.span("engine.adapter_close"):
+            adapter.close()
     except Exception as e:
         logger.error(f"Error tearing down watchers {e}")
+        simulation.telemetry.end_span(run_span_id, state="failed", error="Error tearing down watchers")
         simulation.telemetry.close()
         return EngineResult(ok=False, message="Error tearing down watchers")
-    finally:
-        if simulation.telemetry is not None:
-            simulation.telemetry.close()
 
     if simulation.progress is not None:
         simulation.progress.close()
 
     #TODO add a way to verify that the eventlog is done before grabbing it :)
 
-    run_id = f"nodes{resource_nnodes}_cpr{resource_cores_per_node}"
-    kvs_outfile = f"{config.output_dir}kvs_growth_{run_id}.csv"
-    simulation.dump_kvs_timeseries(kvs_outfile)
-    logger.info(f"Wrote KVS time series to {kvs_outfile}")
+    with simulation.telemetry.span("engine.postprocess"):
+        run_id = f"nodes{resource_nnodes}_cpr{resource_cores_per_node}"
+        kvs_outfile = f"{config.output_dir}kvs_growth_{run_id}.csv"
+        simulation.dump_kvs_timeseries(kvs_outfile)
+        logger.info(f"Wrote KVS time series to {kvs_outfile}")
 
-    simulation.dump_eventlog()
-    filesystem_output.dump_transitions_to_csv(simulation, f"{config.output_dir}job_transitions.csv", adapter)
-    filesystem_output.write_per_node_chrome_trace(simulation, f"{config.output_dir}pernode.json", adapter)
-    resource_summary = output_vis.summarize_and_plot_resources(
-        simulation,
-        adapter,
-        resource_desc,
-        config.output_dir,
-        config_json=config.config_json,
-        config_exclusive=config.exclusive,
-    )
+        simulation.dump_eventlog()
+        filesystem_output.dump_transitions_to_csv(simulation, f"{config.output_dir}job_transitions.csv", adapter)
+        filesystem_output.write_per_node_chrome_trace(simulation, f"{config.output_dir}pernode.json", adapter)
+        resource_summary = output_vis.summarize_and_plot_resources(
+            simulation,
+            adapter,
+            resource_desc,
+            config.output_dir,
+            config_json=config.config_json,
+            config_exclusive=config.exclusive,
+        )
 
     kvs_size_end = int(adapter.get_kvs_stats().get("dbfile_size", 0))
     completed = max(1, simulation.num_complete)  
@@ -276,6 +289,8 @@ def run(
         "resource_summary": resource_summary,
     }
     _write_summary_file(getattr(config, "summary_file", None), summary_payload)
+    simulation.telemetry.end_span(run_span_id, state="succeeded", makespan_seconds=float(makespan))
+    simulation.telemetry.close()
 
     return EngineResult(ok=True, message="Ran Successfully")
 

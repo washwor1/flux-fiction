@@ -76,6 +76,7 @@ class Bridge:
             path.unlink()
 
         sock = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+        sock.settimeout(0.25)
         sock.bind(str(path))
         self._sock = sock
 
@@ -195,7 +196,15 @@ class Bridge:
 
         while not self._stop:
             assert self._sock is not None
-            data = self._sock.recv(65535)
+            try:
+                data = self._sock.recv(65535)
+            except socket.timeout:
+                continue
+            except OSError:
+                if self._stop:
+                    break
+                raise
+
             msg = json.loads(data.decode("utf-8"))
             kind = msg.get("kind")
             if kind == "span_start":
@@ -218,8 +227,11 @@ class Bridge:
                 "attrs": entry["attrs"],
             })
 
-        self._provider.shutdown()
         self._write_summary()
+        try:
+            self._provider.shutdown()
+        except Exception:
+            logger.exception("Telemetry provider shutdown failed")
         self._close()
 
 
