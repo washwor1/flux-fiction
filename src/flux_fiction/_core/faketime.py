@@ -52,6 +52,15 @@ def _parse_relative_offset(text: str) -> float:
 
 
 def _atomic_write_text(path: Path, text: str) -> None:
+    """
+    Replace the stamp file atomically via write-to-temp plus rename.
+
+    The rename matters: libfaketime reopens the file by path on every clock call,
+    so an in-place rewrite would let readers observe a torn offset. Durability
+    does not, since the file lives on tmpfs and is reseeded at the start of every
+    run -- so this deliberately does not fsync. The clock advances once per
+    simulated event, and an fsync per advance is pure overhead.
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp_name = tempfile.mkstemp(
         prefix=f".{path.name}.",
@@ -63,18 +72,7 @@ def _atomic_write_text(path: Path, text: str) -> None:
     try:
         with os.fdopen(fd, "w") as f:
             f.write(text)
-            f.flush()
-            os.fsync(f.fileno())
         os.replace(tmp_path, path)
-        try:
-            dir_fd = os.open(path.parent, os.O_DIRECTORY)
-        except OSError:
-            dir_fd = None
-        if dir_fd is not None:
-            try:
-                os.fsync(dir_fd)
-            finally:
-                os.close(dir_fd)
     finally:
         try:
             if tmp_path.exists():
