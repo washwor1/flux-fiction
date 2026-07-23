@@ -14,6 +14,7 @@ import time
 from typing import Any, Callable
 
 from flux_fiction.api.status import RunStatusWriter, utcnow_iso
+from flux_fiction.parallel import flux_launch
 from flux_fiction.parallel.config import ParallelRunPlan, ResolvedParallelPlan
 
 
@@ -105,7 +106,7 @@ def _normalize_config_snapshot_paths(source_config: Path, cfg: dict[str, Any]) -
     return normalized
 
 
-def _build_run_command(prepared: PreparedParallelRun) -> list[str]:
+def _build_run_command(prepared: PreparedParallelRun, max_concurrent: int = 1) -> list[str]:
     cmd = [
         sys.executable,
         "-m",
@@ -129,10 +130,14 @@ def _build_run_command(prepared: PreparedParallelRun) -> list[str]:
         "on",
     }:
         cmd.append("--no-broker-log-file")
-    return cmd
+    # Flux-native placement: the enclosing instance allocates a disjoint core
+    # block per replica and the job shell binds to it. Empty prefix (plain
+    # launch) unless FLUX_FICTION_FLUX_LAUNCH is set.
+    flux_prefix = flux_launch.launch_prefix(prepared.plan.name, max_concurrent)
+    return flux_prefix + cmd
 
 
-def prepare_parallel_run(plan_run: ParallelRunPlan) -> PreparedParallelRun:
+def prepare_parallel_run(plan_run: ParallelRunPlan, max_concurrent: int = 1) -> PreparedParallelRun:
     run_root = Path(plan_run.run_root)
     child_run_dir = Path(plan_run.child_run_dir)
     stampfile = Path(plan_run.stampfile)
@@ -173,7 +178,7 @@ def prepare_parallel_run(plan_run: ParallelRunPlan) -> PreparedParallelRun:
         launch_metadata_file=launch_metadata_file,
         command=[],
     )
-    command = _build_run_command(prepared)
+    command = _build_run_command(prepared, max_concurrent)
     prepared = PreparedParallelRun(
         plan=prepared.plan,
         run_root=prepared.run_root,
@@ -399,7 +404,10 @@ def run_parallel_plan(
     manifest_snapshot_path = output_root / "manifest.snapshot.toml"
     shutil.copy2(plan.manifest_path, manifest_snapshot_path)
 
-    prepared_runs = [prepare_parallel_run(run_plan) for run_plan in plan.runs]
+    prepared_runs = [
+        prepare_parallel_run(run_plan, max_concurrent=plan.max_concurrent)
+        for run_plan in plan.runs
+    ]
     for prepared in prepared_runs:
         if command_builder is not None:
             command = command_builder(prepared)

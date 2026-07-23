@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 
 from flux_fiction.parallel import (
@@ -10,6 +11,7 @@ from flux_fiction.parallel import (
     resolve_parallel_plan,
     run_parallel_plan,
 )
+from flux_fiction.parallel import flux_launch
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -73,6 +75,13 @@ def _print_text_plan(plan) -> None:
     print(f"Manifest:          {plan.manifest_path}")
     print(f"Output root:       {plan.output_root}")
     print(f"Max concurrent:    {plan.max_concurrent}")
+    if flux_launch.enabled():
+        cores = flux_launch.cores_per_replica(plan.max_concurrent)
+        managed = bool(os.environ.get("FLUX_URI")) and plan.max_concurrent > 1
+        print(
+            f"Flux launch:       enabled ({'managed, ' if managed else 'UNMANAGED, '}"
+            f"cores/replica={cores})"
+        )
     print(f"Fail fast:         {plan.fail_fast}")
     print(f"Progress mode:     {plan.progress_mode}")
     print(f"Summary interval:  {plan.summary_interval}")
@@ -106,6 +115,11 @@ def _print_text_plan(plan) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
+    # Flux-native placement needs an enclosing instance; this replaces the
+    # process with `flux start -- <this runner>` when the mode is on and no
+    # FLUX_URI exists, and returns immediately otherwise.
+    if argv is None:
+        flux_launch.maybe_reexec_under_flux_start()
     args = build_parser().parse_args(argv)
 
     try:
