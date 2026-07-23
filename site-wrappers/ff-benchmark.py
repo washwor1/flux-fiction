@@ -492,6 +492,67 @@ def _fmt_seconds_from_ms(value: Any) -> str:
     return f"{float(value) / 1000.0:.3f}"
 
 
+def _is_present(value: Any) -> bool:
+    return value is not None and value != ""
+
+
+def _variant_has_parallel_data(variant: dict[str, Any]) -> bool:
+    for sample in [*variant.get("warmups", []), *variant.get("samples", [])]:
+        if sample.get("parallel_summary") or sample.get("parallel_status"):
+            return True
+    return False
+
+
+def _parallel_sample_for_report(variant: dict[str, Any]) -> dict[str, Any] | None:
+    for sample in variant.get("samples", []):
+        if sample.get("success") and (sample.get("parallel_summary") or sample.get("parallel_status")):
+            return sample
+    for sample in [*variant.get("warmups", []), *variant.get("samples", [])]:
+        if sample.get("parallel_summary") or sample.get("parallel_status"):
+            return sample
+    return None
+
+
+def _parallel_report_lines(variant: dict[str, Any], heading_level: str) -> list[str]:
+    sample = _parallel_sample_for_report(variant)
+    if sample is None:
+        return []
+
+    summary = sample.get("parallel_summary", {})
+    status = sample.get("parallel_status", {})
+    lines = [f"{heading_level} Parallel: {variant['label']}", ""]
+
+    state = summary.get("state", status.get("state"))
+    total_runs = summary.get("total_runs")
+    if _is_present(state):
+        lines.append(f"- Summary state: `{state}`")
+    if _is_present(total_runs):
+        lines.append(f"- Total child runs: `{total_runs}`")
+
+    outcome_parts: list[str] = []
+    for key in ("succeeded", "failed", "interrupted", "skipped"):
+        value = summary.get(key)
+        if _is_present(value):
+            outcome_parts.append(f"{key}=`{value}`")
+    if outcome_parts:
+        lines.append(f"- Child outcomes: {', '.join(outcome_parts)}")
+
+    active_parts: list[str] = []
+    for key in ("queued", "launching", "running"):
+        value = status.get(key, summary.get(key))
+        if _is_present(value):
+            active_parts.append(f"{key}=`{value}`")
+    if active_parts:
+        lines.append(f"- Active-state snapshot: {', '.join(active_parts)}")
+
+    parallel_root = sample.get("parallel_root")
+    if parallel_root:
+        lines.append(f"- Parallel root: `{parallel_root}`")
+
+    lines.append("")
+    return lines
+
+
 def _runtime_report_lines(variant: dict[str, Any]) -> list[str]:
     stats = variant["stats"]
     lines = [
@@ -546,6 +607,7 @@ def _markdown_table(
 
 
 def write_report(path: Path, benchmark: dict[str, Any]) -> None:
+    has_parallel_variants = any(_variant_has_parallel_data(variant) for variant in benchmark["variants"].values())
     lines = [
         "# Benchmark Report",
         "",
@@ -556,6 +618,8 @@ def write_report(path: Path, benchmark: dict[str, Any]) -> None:
     ]
     if benchmark.get("notes"):
         lines.append(f"- Notes: `{benchmark['notes']}`")
+    if has_parallel_variants:
+        lines.append("- Parallel timing note: sample wall time reflects the full top-level orchestrator invocation.")
 
     variants = list(benchmark["variants"].values())
     if benchmark["mode"] == "single":
@@ -570,6 +634,8 @@ def write_report(path: Path, benchmark: dict[str, Any]) -> None:
             ]
         )
         lines.extend(_runtime_report_lines(variant))
+        lines.append("")
+        lines.extend(_parallel_report_lines(variant, "##"))
     else:
         lines.extend(["", "## Variants", ""])
         for variant in variants:
@@ -582,6 +648,7 @@ def write_report(path: Path, benchmark: dict[str, Any]) -> None:
             )
             lines.extend(_runtime_report_lines(variant))
             lines.append("")
+            lines.extend(_parallel_report_lines(variant, "####"))
 
         comparison = benchmark.get("comparison", {})
         runtime = comparison.get("runtime", {})

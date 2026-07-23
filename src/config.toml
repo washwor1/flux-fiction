@@ -1,8 +1,9 @@
 [flux_fiction]
-job_traces = "../test-inputs/10-multi-node.csv"
+job_traces = "test-inputs/10-multi-node.csv"
 nnodes = 30
 ncpus = 16
 ngpus = 0
 log_level = 10
+backend = "flux"
 log_file = "emu.log"
 quiet = true
