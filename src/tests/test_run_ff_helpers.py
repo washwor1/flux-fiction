@@ -45,7 +45,9 @@ def test_write_flux_fiction_toml_and_load_toml(tmp_path: Path):
 def test_drop_faketime_env_and_broker_log_matches(tmp_path: Path):
     env = {
         "LD_PRELOAD": "x",
+        "FAKETIME": "@2026-04-01 00:00:00",
         "FAKETIME_ONE": "1",
+        "STAMPFILE": "/tmp/stamp",
         "KEEP": "ok",
     }
     cleaned = run_ff.drop_faketime_env(env)

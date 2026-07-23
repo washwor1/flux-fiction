@@ -36,6 +36,14 @@ struct emulator {
 
     bool probe_started;        
     bool sched_quiescent_ok;  
+
+    /* Epoch protocol: a scheduler reply is usable only if no newer
+     * simulator mutation was observed after the probe was launched. */
+    unsigned long long latest_epoch_seen;
+    unsigned long long sim_epoch;
+    unsigned long long quiescence_epoch_requested;
+    unsigned long long last_quiescent_epoch;
+    bool state_dirty_since_probe;
     
     u_int64_t timestep;
 
@@ -133,6 +141,11 @@ static void emulator_reset(struct emulator *emu, bool keep_timestep)
     emu->alloc_needed = 0ULL;
     emu->probe_started = false;
     emu->sched_quiescent_ok = false;
+    emu->latest_epoch_seen = 0ULL;
+    emu->sim_epoch = 0ULL;
+    emu->quiescence_epoch_requested = 0ULL;
+    emu->last_quiescent_epoch = 0ULL;
+    emu->state_dirty_since_probe = false;
 
     if (!keep_timestep)
         emu->timestep = 0;
@@ -168,7 +181,7 @@ static void log_snapshot(struct emulator *emu, const char *where)
         "delta: sched=%llu alloc=%llu start=%llu inactive=%llu | "
         "expect: submits=%llu finishes=%llu | "
         "remaining: sched=%llu inactive=%llu alloc->start=%llu | "
-        "probe_started=%d sched_quiescent_ok=%d",
+        "probe_started=%d sched_quiescent_ok=%d | epoch: latest=%llu sim=%llu probe=%llu last=%llu dirty=%d",
         where,
         (unsigned long long)emu->tot_new,
         (unsigned long long)emu->tot_sched,
@@ -189,7 +202,12 @@ static void log_snapshot(struct emulator *emu, const char *where)
         (unsigned long long)rem_inactive,
         (unsigned long long)rem_alloc2start,
         emu->probe_started ? 1 : 0,
-        emu->sched_quiescent_ok ? 1 : 0
+        emu->sched_quiescent_ok ? 1 : 0,
+        (unsigned long long)emu->latest_epoch_seen,
+        (unsigned long long)emu->sim_epoch,
+        (unsigned long long)emu->quiescence_epoch_requested,
+        (unsigned long long)emu->last_quiescent_epoch,
+        emu->state_dirty_since_probe ? 1 : 0
     );
 }
 
@@ -360,11 +378,15 @@ static void reply_and_advance(struct emulator *emu) {
     emu->sched_quiescent_ok = false;
     
     emu->alloc_needed       = 0ULL; 
+    emu->last_quiescent_epoch = emu->quiescence_epoch_requested;
+    emu->state_dirty_since_probe = false;
 
     log_snapshot(emu, "reply_and_advance(after)");
 }
 
 /* sched.quiescent handling */
+
+static void maybe_start_probe(struct emulator *emu);
 
 static void maybe_finish_after_quiescence(struct emulator *emu)
 {
@@ -422,6 +444,33 @@ static void sched_quiescent_continuation(flux_future_t *f, void *arg)
             ff_otel_span_end(wait_span);
             emu->sched_quiescent_wait_span = NULL;
         }
+    } else if (emu->state_dirty_since_probe
+               || emu->quiescence_epoch_requested < emu->latest_epoch_seen
+               || emu->quiescence_epoch_requested < emu->sim_epoch) {
+        if (emu->log_enabled) {
+            flux_log(emu->h, LOG_INFO,
+                     "discarding stale sched.quiescent reply probe_epoch=%llu latest_epoch=%llu sim_epoch=%llu",
+                     (unsigned long long)emu->quiescence_epoch_requested,
+                     (unsigned long long)emu->latest_epoch_seen,
+                     (unsigned long long)emu->sim_epoch);
+        }
+        if (wait_span) {
+            ff_otel_span_set_attr_str(wait_span, "state", "stale_epoch");
+            ff_otel_span_set_attr_u64(wait_span, "probe_epoch", emu->quiescence_epoch_requested);
+            ff_otel_span_set_attr_u64(wait_span, "latest_epoch", emu->latest_epoch_seen);
+            ff_otel_span_end(wait_span);
+            emu->sched_quiescent_wait_span = NULL;
+        }
+        flux_future_destroy(f);
+        emu->sched_req = NULL;
+        emu->probe_started = false;
+        emu->sched_quiescent_ok = false;
+        emu->alloc_needed = 0ULL;
+        emu->state_dirty_since_probe = false;
+        maybe_start_probe(emu);
+        ff_otel_span_set_attr_str(span, "state", "stale_epoch");
+        ff_otel_span_end(span);
+        return;
     } else {
         json_error_t jerr;
         json_t *root = json_loads(s, 0, &jerr);
@@ -541,13 +590,17 @@ static void send_sched_quiescent(struct emulator *emu) {
     }
 
     if (emu->log_enabled)
-        flux_log(emu->h, LOG_DEBUG, "sending sched.quiescent");
+        flux_log(emu->h, LOG_DEBUG, "sending sched.quiescent epoch=%llu",
+                 (unsigned long long)emu->latest_epoch_seen);
+    emu->quiescence_epoch_requested = emu->latest_epoch_seen;
+    emu->state_dirty_since_probe = false;
     log_snapshot(emu, "before_sched_quiescent_rpc");
     emu->sched_quiescent_wait_span = ff_otel_span_start("jobtap.sched_quiescent_wait");
     if (emu->sched_quiescent_wait_span) {
         ff_otel_span_set_attr_u64(emu->sched_quiescent_wait_span, "expect_submits", emu->exp_submits);
         ff_otel_span_set_attr_u64(emu->sched_quiescent_wait_span, "expect_finishes", emu->exp_finishes);
         ff_otel_span_set_attr_u64(emu->sched_quiescent_wait_span, "timestep", emu->timestep);
+        ff_otel_span_set_attr_u64(emu->sched_quiescent_wait_span, "epoch", emu->quiescence_epoch_requested);
     }
 
     emu->sched_req = flux_rpc(emu->h, "sched.quiescent", NULL, 0, 0);
@@ -641,6 +694,20 @@ static void accumulate_cb(flux_t *h, flux_msg_handler_t *mh,
             return;
         }
 
+        json_t *jE = json_object_get(root, "epoch");
+        unsigned long long epoch = emu->latest_epoch_seen;
+        if (jE && json_is_integer(jE) && json_integer_value(jE) >= 0)
+            epoch = (unsigned long long)json_integer_value(jE);
+        if (epoch > emu->latest_epoch_seen) {
+            emu->latest_epoch_seen = epoch;
+            if ((emu->probe_started || emu->sched_quiescent_ok)
+                && epoch > emu->quiescence_epoch_requested) {
+                emu->state_dirty_since_probe = true;
+                emu->sched_quiescent_ok = false;
+                emu->alloc_needed = 0ULL;
+            }
+        }
+
         json_t *expect = json_object_get(root, "expect");
         if (expect && json_is_object(expect)) {
             json_t *jS = json_object_get(expect, "submits");
@@ -660,6 +727,8 @@ static void accumulate_cb(flux_t *h, flux_msg_handler_t *mh,
     }
 
     flux_respond(emu->h, msg, "{}");
+    if (emu->state_dirty_since_probe && !emu->sched_req)
+        maybe_start_probe(emu);
 }
 
 /* emulator RPC: job-manager.emu-jobtap.quiescent */
@@ -679,10 +748,10 @@ static void quiescent_cb(flux_t *h, flux_msg_handler_t *mh,
         flux_log(emu->h, LOG_DEBUG, "received emulator quiescent probe");
 
     if (emu->sim_req) {
-        if (emu->log_enabled)
-            flux_log(emu->h, LOG_WARNING, "replacing outstanding emulator request");
-        flux_msg_destroy(emu->sim_req);
-        emu->sim_req = NULL;
+        flux_respond_error(emu->h, msg, EBUSY,
+                           "emu-jobtap: quiescence request already outstanding");
+        ff_otel_span_end(span);
+        return;
     }
     emu->sim_req = flux_msg_copy(msg, true);
     if (!emu->sim_req) {
@@ -697,6 +766,24 @@ static void quiescent_cb(flux_t *h, flux_msg_handler_t *mh,
     emu->sched_quiescent_ok = false;
 
     if (payload && *payload) {
+        json_error_t jerr;
+        json_t *root = json_loads(payload, 0, &jerr);
+        if (!root) {
+            flux_respond_error(emu->h, msg, EINVAL,
+                               "emu-jobtap: bad quiescent payload");
+            flux_msg_destroy(emu->sim_req);
+            emu->sim_req = NULL;
+            ff_otel_span_end(span);
+            return;
+        }
+        json_t *jE = json_object_get(root, "epoch");
+        if (jE && json_is_integer(jE) && json_integer_value(jE) >= 0)
+            emu->sim_epoch = (unsigned long long)json_integer_value(jE);
+        else
+            emu->sim_epoch = emu->latest_epoch_seen;
+        if (emu->sim_epoch > emu->latest_epoch_seen)
+            emu->latest_epoch_seen = emu->sim_epoch;
+        json_decref(root);
         if (emu->log_enabled)
             flux_log(emu->h, LOG_DEBUG, "<------------------------- TIMESTEP %ld ------------------------->", emu->timestep);
         emu->timestep += 1;
@@ -714,6 +801,7 @@ static void quiescent_cb(flux_t *h, flux_msg_handler_t *mh,
     maybe_start_probe(emu);
     ff_otel_span_set_attr_u64(span, "expect_submits", emu->exp_submits);
     ff_otel_span_set_attr_u64(span, "expect_finishes", emu->exp_finishes);
+    ff_otel_span_set_attr_u64(span, "epoch", emu->sim_epoch);
     ff_otel_span_end(span);
 }
 

@@ -87,6 +87,7 @@ class Job(object):
         self.real_submit = None     # time.time() at actual submit()
         self.real_start  = None     # time.time() when sim_exec.start processed
         self.real_finish = None     # time.time() when complete_job() runs
+        self.flux_observed_start = None  # faketime visible to Flux at start callback
         self.jobspec_intermediate_types = []
         self.jobspec_intermediate_counts = {}
         self.rabbit_storage_resource_type = "ssd"

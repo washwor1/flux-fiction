@@ -6,6 +6,7 @@ import re
 
 import pytest
 
+from flux_fiction.faketime_paths import default_stampfile_path
 from flux_fiction.cli import run_ff_parallel
 from flux_fiction.parallel import ParallelValidationError, load_parallel_manifest, resolve_parallel_plan
 
@@ -124,7 +125,7 @@ config_file = "./config.toml"
     assert run_root.parent == Path(plan.output_root) / "runs"
     assert run_root.name == "0001_alpha-run"
     assert run.child_run_dir == str(run_root / "child")
-    assert run.stampfile == str(run_root / "child" / "faketime_stamp")
+    assert run.stampfile == str(default_stampfile_path(run_root / "child"))
 
 
 def test_resolve_parallel_plan_supports_sharding(tmp_path):

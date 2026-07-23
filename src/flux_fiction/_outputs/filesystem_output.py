@@ -27,6 +27,7 @@ def dump_transitions_to_csv(simulation, filename, adapter: Adapter):
             "REAL_SUBMIT": f(job.real_submit),
             "REAL_START":  f(job.real_start),
             "REAL_FINISH": f(job.real_finish),
+            "FLUX_OBSERVED_START": f(job.flux_observed_start),
             "NODELIST": ",".join(str(n) for n in nodes),
         })
 
@@ -38,6 +39,7 @@ def dump_transitions_to_csv(simulation, filename, adapter: Adapter):
     fieldnames = ["trace_idx", "jobid", "nnodes",
                   "SUBMIT", "START", "FINISH",
                   "REAL_SUBMIT", "REAL_START", "REAL_FINISH",
+                  "FLUX_OBSERVED_START",
                   "NODELIST"]
     with open(filename, "w", newline="") as csvfile:
         w = csv.DictWriter(csvfile, fieldnames=fieldnames)

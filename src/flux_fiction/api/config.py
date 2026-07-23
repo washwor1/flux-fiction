@@ -171,6 +171,7 @@ class ExperimentConfig:
     faketime_seed: bool = True
     faketime_tolerance: float = 1e-6
     faketime_near_event_threshold: float = 0.0
+    quiescent_accumulation_window: float = 0.0
     otel_enabled: bool = False
     otel_endpoint: str = "http://127.0.0.1:4318/v1/traces"
     otel_service_name: str = "flux-fiction"
@@ -222,6 +223,7 @@ class ExperimentConfigModel(BaseModel):
     faketime_seed: bool = True
     faketime_tolerance: float = Field(default=1e-6, ge=0)
     faketime_near_event_threshold: float = Field(default=0.0, ge=0)
+    quiescent_accumulation_window: float = Field(default=0.0, ge=0)
     otel_enabled: bool = False
     otel_endpoint: str = "http://127.0.0.1:4318/v1/traces"
     otel_service_name: str = "flux-fiction"
@@ -328,6 +330,7 @@ def from_toml(args: dict) -> ExperimentConfig:
         "faketime_seed",
         "faketime_tolerance",
         "faketime_near_event_threshold",
+        "quiescent_accumulation_window",
         "account_system_latency",
         "jobtap_logging",
         "otel_enabled",

@@ -122,6 +122,13 @@ def _build_run_command(prepared: PreparedParallelRun) -> list[str]:
         cmd.extend(["--tag", prepared.plan.tag])
     if prepared.plan.no_faketime:
         cmd.append("--no-faketime")
+    if os.environ.get("FLUX_FICTION_NO_BROKER_LOG_FILE", "").lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }:
+        cmd.append("--no-broker-log-file")
     return cmd
 
 

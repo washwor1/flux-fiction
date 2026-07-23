@@ -9,6 +9,7 @@ import threading
 import time
 
 from flux_fiction.parallel import load_parallel_manifest, prepare_parallel_run, resolve_parallel_plan, run_parallel_plan
+from flux_fiction.parallel.runner import _build_run_command
 
 
 def _write_manifest(path: Path, body: str) -> Path:
@@ -121,6 +122,30 @@ account_system_latency = false
     assert 'backend = "mock"' in launch_cfg
     assert "account_system_latency = false" in launch_cfg
     assert prepared.launch_metadata_file.exists()
+
+
+def test_parallel_runner_can_disable_broker_file_sink(tmp_path, monkeypatch):
+    config = tmp_path / "config.toml"
+    config.write_text("[flux_fiction]\njob_traces = \"trace.csv\"\n", encoding="ascii")
+    manifest_path = _write_manifest(
+        tmp_path / "manifest.toml",
+        """
+version = 1
+
+[parallel]
+max_concurrent = 1
+
+[[run]]
+name = "quiet-broker"
+config_file = "./config.toml"
+""".strip()
+        + "\n",
+    )
+    prepared = prepare_parallel_run(resolve_parallel_plan(load_parallel_manifest(manifest_path)).runs[0])
+
+    monkeypatch.setenv("FLUX_FICTION_NO_BROKER_LOG_FILE", "true")
+
+    assert "--no-broker-log-file" in _build_run_command(prepared)
 
 
 def test_run_parallel_plan_writes_parent_status_and_summary(tmp_path, capsys):

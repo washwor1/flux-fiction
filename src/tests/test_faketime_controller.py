@@ -144,7 +144,7 @@ def test_simulation_advances_faketime_before_event_callbacks(tmp_path):
     assert calls[1] == ("event", None)
 
 
-def test_simulation_uses_observed_fake_time_for_starts(tmp_path):
+def test_simulation_keeps_logical_start_separate_from_observed_faketime(tmp_path):
     class Controller:
         def current_effective_time(self):
             return 123.456789
@@ -175,6 +175,7 @@ def test_simulation_uses_observed_fake_time_for_starts(tmp_path):
 
     simulation.start_job("job1")
 
-    assert job.start_time == 123.456789
-    assert job.state_transitions["STARTED"] == 123.456789
-    assert job.complete_time == pytest.approx(133.456789)
+    assert job.start_time == 200.0
+    assert job.state_transitions["STARTED"] == 200.0
+    assert job.complete_time == pytest.approx(210.0)
+    assert job.flux_observed_start == 123.456789

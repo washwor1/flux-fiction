@@ -143,12 +143,5 @@ def test_condensed_rabbit_trace_matches_with_and_without_faketime(tmp_path: Path
     no_fake_starts = _first_start_times(no_fake_transitions)
     fake_starts = _first_start_times(fake_transitions)
 
-    if no_fake_max_active != fake_max_active or no_fake_starts != fake_starts:
-        pytest.xfail(
-            "Known bug: enabling faketime changes the condensed rabbit workload result "
-            f"(max_active no-faketime={no_fake_max_active}, faketime={fake_max_active})"
-        )
-    pytest.fail(
-        "The condensed rabbit faketime regression no longer reproduces. "
-        "Convert this expected-failure test into a normal assertion."
-    )
+    assert fake_max_active == no_fake_max_active
+    assert fake_starts == no_fake_starts
