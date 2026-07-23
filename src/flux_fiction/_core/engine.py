@@ -112,6 +112,7 @@ def run(
         jobtap_logging=config.jobtap_logging,
         output_dir = config.output_dir,
         faketime_controller=faketime_controller,
+        quiescent_accumulation_window=config.quiescent_accumulation_window,
         otel_enabled=config.otel_enabled,
         otel_bridge_socket=config.otel_bridge_socket,
         otel_service_name=config.otel_service_name,
@@ -268,6 +269,22 @@ def run(
         max_wait = max(waits)
         print(f"Max queue wait time: {max_wait:.6f} seconds (sim time)")
 
+    observed_start_lags = sorted(
+        float(job.flux_observed_start) - float(job.state_transitions["STARTED"])
+        for job in simulation.job_map.values()
+        if job.flux_observed_start is not None
+        and job.state_transitions.get("STARTED") is not None
+    )
+    observed_start_lag_avg = (
+        sum(observed_start_lags) / len(observed_start_lags)
+        if observed_start_lags else None
+    )
+    observed_start_lag_max = observed_start_lags[-1] if observed_start_lags else None
+    observed_start_lag_p95 = (
+        observed_start_lags[min(len(observed_start_lags) - 1, int(0.95 * len(observed_start_lags)))]
+        if observed_start_lags else None
+    )
+
     summary_payload = {
         "version": 1,
         "state": "succeeded",
@@ -282,6 +299,13 @@ def run(
         "makespan_hours": float(makespan) / 3600.0,
         "avg_queue_wait_seconds": None if avg_wait is None else float(avg_wait),
         "max_queue_wait_seconds": None if max_wait is None else float(max_wait),
+        "quiescence_epochs": int(simulation.current_epoch),
+        "last_quiescent_epoch": int(simulation.last_quiescent_epoch),
+        "stale_quiescence_replies": int(simulation.stale_quiescence_replies),
+        "flux_observed_start_lag_samples": len(observed_start_lags),
+        "flux_observed_start_lag_avg_seconds": observed_start_lag_avg,
+        "flux_observed_start_lag_p95_seconds": observed_start_lag_p95,
+        "flux_observed_start_lag_max_seconds": observed_start_lag_max,
         "kvs_size_start_bytes": int(kvs_size_start),
         "kvs_size_end_bytes": int(kvs_size_end),
         "kvs_bytes_per_completed_job": float(kvs_bytes_per_completed),
@@ -337,6 +361,7 @@ class Simulation(object):
             jobtap_logging: bool = False,
             output_dir: str = "./",
             faketime_controller: FakeTimeController | None = None,
+            quiescent_accumulation_window: float = 0.0,
             otel_enabled: bool = False,
             otel_bridge_socket: str | None = None,
             otel_service_name: str = "flux-fiction",
@@ -377,8 +402,21 @@ class Simulation(object):
         self.otel_enabled = bool(otel_enabled and otel_bridge_socket)
         self.otel_bridge_socket = otel_bridge_socket
         self.otel_service_name = otel_service_name
-        self.quiescent_accumulation_window = 1.0
+        # A positive window coalesces distinct logical event buckets before
+        # asking the scheduler for quiescence.  That is an optional throughput
+        # tradeoff: it changes the scheduler-visible ordering and therefore
+        # must not be the correctness default.
+        self.quiescent_accumulation_window = float(quiescent_accumulation_window)
         self.pending_quiescent_expect = {"submits": 0, "finishes": 0}
+        # Epochs make delayed quiescence replies harmless.  An epoch advances
+        # once for each synchronous bucket that mutates scheduler-visible state.
+        self.current_epoch = 0
+        self.latest_mutating_epoch = 0
+        self.last_quiescent_epoch = 0
+        self.quiescence_inflight = False
+        self.quiescence_epoch = None
+        self.quiescence_bucket_time = None
+        self.stale_quiescence_replies = 0
         self.num_started = 0
         self.jobs_total = 0
         self.status_writer = status or RunStatusWriter(None)
@@ -422,6 +460,16 @@ class Simulation(object):
         self.pending_quiescent_expect["submits"] += int(expect.get("submits", 0) or 0)
         self.pending_quiescent_expect["finishes"] += int(expect.get("finishes", 0) or 0)
 
+    def _bump_epoch_for_expect(self, expect):
+        if not expect:
+            return False
+        mutates = int(expect.get("submits", 0) or 0) + int(expect.get("finishes", 0) or 0)
+        if mutates <= 0:
+            return False
+        self.current_epoch += 1
+        self.latest_mutating_epoch = self.current_epoch
+        return True
+
     def _flush_pending_quiescent_expect(self):
         expect = {
             "submits": int(self.pending_quiescent_expect["submits"]),
@@ -429,11 +477,49 @@ class Simulation(object):
         }
         if expect["submits"] or expect["finishes"]:
             self.adapter.accumulate_quiescent(json.dumps({
-                "time": self.current_time,
+                "epoch": self.current_epoch,
+                "logical_time": self.current_time,
                 "expect": expect,
             }))
         self.pending_quiescent_expect = {"submits": 0, "finishes": 0}
         return expect
+
+    def _send_quiescence_probe(self, *, final=False):
+        if self.quiescence_inflight:
+            return False
+        expect = self._flush_pending_quiescent_expect()
+        probe_epoch = self.current_epoch
+        bucket_time = float(self.current_time)
+        payload = {
+            "epoch": probe_epoch,
+            "logical_time": bucket_time,
+            "expect": expect,
+            "final": bool(final),
+        }
+        span_id = self.telemetry.start_span(
+            "simulation.query_quiescent",
+            sim_time=bucket_time,
+            epoch=probe_epoch,
+            expect_submits=int(expect["submits"]),
+            expect_finishes=int(expect["finishes"]),
+            time_step=self.time_step,
+        )
+        self.quiescence_inflight = True
+        self.quiescence_epoch = probe_epoch
+        self.quiescence_bucket_time = bucket_time
+        try:
+            self.adapter.query_quiescent(
+                json.dumps(payload),
+                lambda fut, _arg, epoch=probe_epoch, logical_time=bucket_time, span=span_id:
+                    self.quiescent_cb(epoch, logical_time, span),
+            )
+        except Exception:
+            self.quiescence_inflight = False
+            self.quiescence_epoch = None
+            self.quiescence_bucket_time = None
+            self.telemetry.end_span(span_id, state="rpc_error")
+            raise
+        return True
 
     def _should_defer_quiescent(self, next_event_time):
         if next_event_time is None:
@@ -845,8 +931,14 @@ class Simulation(object):
                 self.start_job_hook(self, job)
 
             if self.account_system_latency and self.faketime_controller is not None:
+                # Faketime is an observation channel for Flux, not simulator
+                # truth.  Scheduler/emulator wall lag must not move STARTED or
+                # the completion event derived from it.
+                job.flux_observed_start = models.qtime(
+                    self.faketime_controller.current_effective_time()
+                )
                 job.ack_start(self.adapter)
-                start_time = models.qtime(self.faketime_controller.current_effective_time())
+                start_time = models.qtime(self.current_time)
                 job.mark_started(start_time)
             elif self.account_system_latency:
                 start_time = models.qtime(self.current_time)
@@ -912,23 +1004,9 @@ class Simulation(object):
 
                     logger.info("Event list empty but jobs in flight; probing jobtap for quiescence")
                     self.final_quiescence_probe_sent = True
-                    quiescent_span = None
                     try:
-                        expect = self._flush_pending_quiescent_expect()
-                        quiescent_span = self.telemetry.start_span(
-                            "simulation.query_quiescent",
-                            sim_time=self.current_time,
-                            expect_submits=int(expect["submits"]),
-                            expect_finishes=int(expect["finishes"]),
-                            time_step=self.time_step,
-                        )
-                        self.adapter.query_quiescent(
-                            json.dumps({"time": self.current_time}),
-                            lambda fut, _arg, span_id=quiescent_span: self.quiescent_cb(span_id)
-                        )
+                        self._send_quiescence_probe(final=True)
                     except Exception as e:
-                        if quiescent_span is not None:
-                            self.telemetry.end_span(quiescent_span, error=repr(e))
                         self._fail(
                             "Final quiescence query failed at sim_time={}: {}"
                             .format(self.current_time, e)
@@ -992,6 +1070,7 @@ class Simulation(object):
             self.write_status_snapshot(state="running")
 
             expect = self.step_expect.get(self.current_time, {"submits": 0, "finishes": 0})
+            self._bump_epoch_for_expect(expect)
             self._add_pending_quiescent_expect(expect)
             if self.current_time in self.step_expect:
                 del self.step_expect[self.current_time]
@@ -1007,23 +1086,9 @@ class Simulation(object):
                 continue
 
             logger.debug("Querying Quiescent")
-            quiescent_span = None
             try:
-                flushed_expect = self._flush_pending_quiescent_expect()
-                quiescent_span = self.telemetry.start_span(
-                    "simulation.query_quiescent",
-                    sim_time=self.current_time,
-                    expect_submits=int(flushed_expect["submits"]),
-                    expect_finishes=int(flushed_expect["finishes"]),
-                    time_step=self.time_step,
-                )
-                self.adapter.query_quiescent(
-                    json.dumps({"time": self.current_time}),
-                    lambda fut, _arg, span_id=quiescent_span: self.quiescent_cb(span_id),
-                )
+                self._send_quiescence_probe()
             except Exception as e:
-                if quiescent_span is not None:
-                    self.telemetry.end_span(quiescent_span, error=repr(e))
                 self._fail(
                     "Quiescent query failed at sim_time={}: {}"
                     .format(self.current_time, e)
@@ -1037,13 +1102,36 @@ class Simulation(object):
     #     '''
     #     return self.job_manager_quiescent and len(self.pending_inactivations) == 0
 
-    def quiescent_cb(self, span_id=None):
+    def quiescent_cb(self, reply_epoch, bucket_time, span_id=None):
         '''
         Calls upon the scheduler to see if it is idle
         '''
         logger.debug("Hit quiescent")
         logger.info("Quiescent confirmed by jobtap")
-        self.telemetry.end_span(span_id, sim_time=self.current_time)
+        self.quiescence_inflight = False
+        self.quiescence_epoch = None
+        self.quiescence_bucket_time = None
+        stale = reply_epoch != self.current_epoch or bucket_time != float(self.current_time)
+        self.telemetry.end_span(
+            span_id,
+            sim_time=self.current_time,
+            reply_epoch=reply_epoch,
+            current_epoch=self.current_epoch,
+            stale=stale,
+        )
+        if stale:
+            self.stale_quiescence_replies += 1
+            logger.info(
+                "Ignoring stale quiescence reply epoch=%s bucket=%s; current epoch=%s bucket=%s",
+                reply_epoch,
+                bucket_time,
+                self.current_epoch,
+                self.current_time,
+            )
+            if not self.failed_reason:
+                self._send_quiescence_probe()
+            return
+        self.last_quiescent_epoch = reply_epoch
         self.job_manager_quiescent = True
         if self.failed_reason:
             return

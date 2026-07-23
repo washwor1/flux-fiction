@@ -137,6 +137,42 @@ print(json.dumps(response, sort_keys=True))
     assert payload == {"submits": 0, "finishes": 0}
 
 
+def test_real_flux_jobtap_round_trips_epoch_probe_payload(tmp_path: Path):
+    proc = _run_in_private_broker(
+        tmp_path,
+        """
+import json
+import flux
+
+handle = flux.Flux()
+handle.rpc(
+    "job-manager.emu-jobtap.accumulate",
+    payload=json.dumps({
+        "epoch": 7,
+        "logical_time": 42.5,
+        "expect": {"submits": 0, "finishes": 0},
+    }),
+).get()
+probe = {
+    "epoch": 7,
+    "logical_time": 42.5,
+    "expect": {"submits": 0, "finishes": 0},
+}
+response = handle.rpc(
+    "job-manager.emu-jobtap.quiescent",
+    payload=json.dumps(probe),
+).get()
+print(json.dumps(response, sort_keys=True))
+""".strip(),
+        load_jobtap=True,
+    )
+
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    payload = json.loads(proc.stdout.strip().splitlines()[-1])
+    assert payload["epoch"] == 7
+    assert payload["logical_time"] == 42.5
+
+
 def test_real_fluxion_unsatisfiable_jobspec_is_exposed_in_attempts(tmp_path: Path):
     config_json = _workspace_root() / "tmp" / "resource-match-profile-slot-350" / "config.json"
     if not config_json.exists():

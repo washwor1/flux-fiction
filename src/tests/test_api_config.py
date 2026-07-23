@@ -95,6 +95,7 @@ def test_load_toml_and_from_toml_support_top_level_and_overrides(tmp_path: Path)
                 "backend = \"mock\"",
                 "output_dir = \"./output\"",
                 "jobtap_logging = false",
+                "quiescent_accumulation_window = 0.25",
             ]
         )
         + "\n",
@@ -109,6 +110,7 @@ def test_load_toml_and_from_toml_support_top_level_and_overrides(tmp_path: Path)
         faketime_seed=None,
         faketime_tolerance=None,
         faketime_near_event_threshold=None,
+        quiescent_accumulation_window=None,
         account_system_latency=False,
         jobtap_logging=True,
         otel_enabled=None,
@@ -127,6 +129,7 @@ def test_load_toml_and_from_toml_support_top_level_and_overrides(tmp_path: Path)
     assert cfg.jobtap_logging is True
     assert cfg.account_system_latency is False
     assert cfg.faketime_timestamp_file == "/tmp/stamp"
+    assert cfg.quiescent_accumulation_window == 0.25
     assert cfg.output_dir.endswith("/")
 
 
@@ -176,6 +179,7 @@ def test_from_cli_args_uses_direct_values_without_toml():
         faketime_seed=True,
         faketime_tolerance=1e-6,
         faketime_near_event_threshold=0.0,
+        quiescent_accumulation_window=0.0,
         otel_enabled=False,
         otel_endpoint="http://127.0.0.1:4318/v1/traces",
         otel_service_name="flux-fiction",
