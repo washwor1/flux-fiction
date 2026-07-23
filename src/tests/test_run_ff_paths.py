@@ -111,3 +111,31 @@ def test_warn_on_implicit_stampfile_for_default(tmp_path, capsys):
     assert "WARNING:" in captured.err
     assert "default container-local faketime stamp file" in captured.err
     assert str(stamp) in captured.err
+
+
+def test_configure_dftracer_env_uses_run_specific_prefix(tmp_path):
+    run_root = tmp_path / "runs" / "run-one"
+    base_prefix = tmp_path / "traces" / "flux-fiction"
+    env = {
+        "DFTRACER_ENABLE": "1",
+        "DFTRACER_LOG_FILE": str(base_prefix),
+        "DFTRACER_DATA_DIR": "/workspace",
+    }
+
+    configured = run_ff.configure_dftracer_env(env, run_root)
+
+    expected = base_prefix.parent / run_root.name / base_prefix.name
+    assert configured == {
+        "DFTRACER_ENABLE": "1",
+        "DFTRACER_LOG_FILE": str(expected),
+        "DFTRACER_DATA_DIR": "/workspace",
+    }
+    assert env["DFTRACER_LOG_FILE"] == str(expected)
+    assert expected.parent.is_dir()
+
+
+def test_configure_dftracer_env_is_noop_when_disabled(tmp_path):
+    env = {"DFTRACER_ENABLE": "0", "DFTRACER_LOG_FILE": "/tmp/trace"}
+
+    assert run_ff.configure_dftracer_env(env, tmp_path / "run") == {}
+    assert env["DFTRACER_LOG_FILE"] == "/tmp/trace"

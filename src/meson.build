@@ -109,6 +109,7 @@ shared_module(
     '-Wextra',
     '-Werror=implicit-function-declaration',
     '-I' + flux_include_dir,
+    '-D_GNU_SOURCE',
   ],
   name_prefix: '',
   install: true,
