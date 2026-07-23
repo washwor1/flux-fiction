@@ -18,6 +18,8 @@ authors = [
 dependencies = [
   "pydantic>=1.10",
   "tqdm>=4.0",
+  # develop provides DFTRACER_TIME_METRIC, used by the simulated-clock events.
+  "dftracer @ git+https://github.com/LLNL/dftracer.git@develop",
 ]
 
 [project.optional-dependencies]

@@ -1,5 +1,14 @@
 from __future__ import annotations
 
+# dftracer imports for simulated-time tracing
+try:
+    from dftracer.python import dftracer, dft_fn as DFTracerFn
+    _dft = DFTracerFn("simulation")
+    _dft_available = True
+except ImportError:
+    _dft = None
+    _dft_available = False
+
 from dataclasses import dataclass
 import logging
 import os
@@ -134,6 +143,19 @@ class FakeTimeController:
             )
 
     def seed(self, simulation_time: float) -> FakeTimeDecision:
+        # Log faketime seed as simulated-time event
+        if _dft_available:
+            try:
+                target = self.target_time(simulation_time)
+                dftracer.get_instance().log_event(
+                    name="faketime_seed",
+                    cat="simulation",
+                    start_time=int(target * 1e9),
+                    duration=0,
+                    int_args={"target_sim_time_s": (0, int(simulation_time))},
+                )
+            except Exception as e:
+                logger.debug("Failed to log faketime_seed event: %s", e)
         target = self.target_time(simulation_time)
         now = self._real_time()
         offset = target - now
@@ -153,6 +175,22 @@ class FakeTimeController:
         return self._fake_time() if fake_now is None else float(fake_now)
 
     def advance_to(self, simulation_time: float) -> FakeTimeDecision:
+        # Log faketime advance as simulated-time event
+        if _dft_available:
+            try:
+                target = self.target_time(simulation_time)
+                current = self.current_effective_time()
+                advance_amount_ns = max(0, int((target - current) * 1e9))
+                start_time_ns = int(current * 1e9)
+                dftracer.get_instance().log_event(
+                    name="faketime_advance",
+                    cat="simulation",
+                    start_time=start_time_ns,
+                    duration=advance_amount_ns,
+                    int_args={"target_sim_time_s": (0, int(simulation_time))},
+                )
+            except Exception as e:
+                logger.debug("Failed to log faketime_advance event: %s", e)
         target = self.target_time(simulation_time)
         effective = self.current_effective_time()
 

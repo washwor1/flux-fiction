@@ -26,6 +26,15 @@ import json
 import os
 from tqdm import tqdm
 
+# dftracer imports for simulated-time job lifecycle tracing
+try:
+    from dftracer.python import dftracer, dft_fn as DFTracerFn
+    _dft = DFTracerFn("simulation")
+    _dft_available = True
+except ImportError:
+    _dft = None
+    _dft_available = False
+
 logger = logging.getLogger(__name__)
 
 # tracer = get_tracer()
@@ -888,6 +897,22 @@ class Simulation(object):
     
     def submit_job(self, job):
         job.record_state_transition("SUBMITTED", models.qtime(self.current_time))
+        # Log job submission as simulated-time event
+        if _dft_available:
+            try:
+                sim_submit_time_ns = int(models.qtime(job.submit_time) * 1e9)
+                gap_ns = int(job.gap * 1e9) if hasattr(job, 'gap') else 0
+                trace_idx = getattr(job, "trace_index", None)
+                dftracer.get_instance().log_event(
+                    name="job_submit",
+                    cat="simulation",
+                    start_time=sim_submit_time_ns,
+                    duration=gap_ns,
+                    int_args={"trace_idx": (0, -1 if trace_idx is None else int(trace_idx))},
+                    string_args={"job_id": (0, str(getattr(job, "jobid", "") or ""))},
+                )
+            except Exception as e:
+                logger.debug("Failed to log job_submit event: %s", e)
         with self.telemetry.span(
             "simulation.submit_job",
             trace_idx=getattr(job, "trace_index", None),
@@ -949,6 +974,40 @@ class Simulation(object):
                 job.mark_started(start_time)
                 job.ack_start(self.adapter)
 
+            # Log job start as simulated-time event (after all branches have set start_time)
+            if _dft_available:
+                try:
+                    sim_start_time_ns = int(models.qtime(job.start_time) * 1e9)
+                    gap_ns = int(job.gap * 1e9) if hasattr(job, 'gap') else 0
+                    # mhost: emit ONE event PER allocated node (not one event with
+                    # a comma-joined node list) so a trace viewer can actually
+                    # group/filter by individual simulated node — same pattern
+                    # as per-MPI-rank tracing. Same start_time/duration on every
+                    # per-node event; only mhost differs. Stored on the job so
+                    # complete_job() reuses the same node list without a second
+                    # RPC (pid/tid stay dummy/constant — this single Python
+                    # process emulates every node, so mhost is the only field
+                    # that actually distinguishes nodes in the trace).
+                    nodes = []
+                    try:
+                        nodes, _src = self.adapter.nodelist_lookup(jobid)
+                    except Exception:
+                        pass
+                    job.allocated_nodes = nodes
+                    node_ids = [str(n) for n in sorted(nodes)] if nodes else [""]
+                    trace_idx = getattr(job, "trace_index", None)
+                    for node_id in node_ids:
+                        dftracer.get_instance().log_event(
+                            name="job_start",
+                            cat="simulation",
+                            start_time=sim_start_time_ns,
+                            duration=gap_ns,
+                            int_args={"trace_idx": (0, -1 if trace_idx is None else int(trace_idx))},
+                            string_args={"job_id": (0, str(jobid or "")), "mhost": (0, node_id)},
+                        )
+                except Exception as e:
+                    logger.debug("Failed to log job_start event: %s", e)
+
             job.record_state_transition("STARTED", start_time)
             job.queue_wait = job.queue_wait_time()
 
@@ -964,6 +1023,25 @@ class Simulation(object):
         self.num_complete += 1
         self.final_quiescence_probe_sent = False
         t = models.qtime(self.current_time)
+        # Log job completion as simulated-time event (spans from start to finish)
+        if _dft_available:
+            try:
+                sim_start_time_ns = int(models.qtime(job.start_time) * 1e9)
+                duration_ns = int(models.qtime(job.elapsed_time) * 1e9)
+                nodes = getattr(job, "allocated_nodes", None) or []
+                node_ids = [str(n) for n in sorted(nodes)] if nodes else [""]
+                trace_idx = getattr(job, "trace_index", None)
+                for node_id in node_ids:
+                    dftracer.get_instance().log_event(
+                        name="job_complete",
+                        cat="simulation",
+                        start_time=sim_start_time_ns,
+                        duration=duration_ns,
+                        int_args={"trace_idx": (0, -1 if trace_idx is None else int(trace_idx))},
+                        string_args={"job_id": (0, str(getattr(job, "jobid", "") or "")), "mhost": (0, node_id)},
+                    )
+            except Exception as e:
+                logger.debug("Failed to log job_complete event: %s", e)
         job.record_state_transition("COMPLETED", t)
         job.record_state_transition("INACTIVE", t)
         job.real_finish = time.time() 

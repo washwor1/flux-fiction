@@ -338,6 +338,30 @@ def configure_flux_env(env: dict[str, str]) -> None:
     )
 
 
+def configure_dftracer_env(env: dict[str, str], run_root: Path) -> dict[str, str]:
+    if env.get("DFTRACER_ENABLE") != "1":
+        return {}
+
+    configured_prefix = env.get("DFTRACER_LOG_FILE")
+    if configured_prefix:
+        base_prefix = Path(configured_prefix).expanduser()
+        trace_prefix = base_prefix.parent / run_root.name / base_prefix.name
+    else:
+        trace_prefix = run_root / "dftracer" / "flux-fiction"
+
+    trace_prefix.parent.mkdir(parents=True, exist_ok=True)
+    dftracer_env = {
+        "DFTRACER_ENABLE": "1",
+        "DFTRACER_LOG_FILE": str(trace_prefix),
+    }
+    for name in ("DFTRACER_DATA_DIR", "DFTRACER_TIME_METRIC"):
+        if name in env:
+            dftracer_env[name] = env[name]
+
+    env.update(dftracer_env)
+    return dftracer_env
+
+
 def prepare_config(
     source_config: Path,
     run_root: Path,
@@ -699,6 +723,9 @@ def main() -> int:
         "FLUX_FICTION_PATH_MAP",
         f"/home/j/Desktop/flux/sc25_poster={workspace_root()}",
     )
+    dftracer_env = configure_dftracer_env(env, run_root)
+    if dftracer_env:
+        status.update(dftracer_log_prefix=dftracer_env["DFTRACER_LOG_FILE"])
 
     faketime_env: dict[str, str] = {}
     first_submit = None
@@ -764,6 +791,7 @@ def main() -> int:
         cmd,
         {
             "FLUX_FICTION_PATH_MAP": env["FLUX_FICTION_PATH_MAP"],
+            **dftracer_env,
             **faketime_env,
         },
         extra_lines=bridge_extra_lines,
@@ -777,6 +805,8 @@ def main() -> int:
     else:
         print(f"Broker log:       {broker_log}")
     print(f"Run log:          {stdout_log}")
+    if dftracer_env:
+        print(f"DFTracer prefix:  {dftracer_env['DFTRACER_LOG_FILE']}")
     if not args.no_faketime:
         print(f"Stamp file:       {stampfile}")
         print(f"First submit:     {first_submit:.6f}")
