@@ -10,6 +10,7 @@ from typing import Any, Optional
 
 from pydantic import BaseModel, Field, ValidationError
 from flux_fiction.api.config import ExperimentConfigModel
+from flux_fiction.faketime_paths import default_stampfile_path
 
 try:
     from pydantic import ConfigDict, model_validator
@@ -492,7 +493,7 @@ def resolve_parallel_plan(
         slug = _slugify(run.name)
         run_root = effective_output_root / "runs" / f"{ordinal:04d}_{slug}"
         child_run_dir = run_root / "child"
-        stampfile = child_run_dir / "faketime_stamp"
+        stampfile = default_stampfile_path(child_run_dir)
         plans.append(
             ParallelRunPlan(
                 ordinal=ordinal,

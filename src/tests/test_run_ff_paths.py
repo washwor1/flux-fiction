@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 from pathlib import Path
+import tempfile
 
 import pytest
 
 from flux_fiction.cli import run_ff
+from flux_fiction.faketime_paths import default_stampfile_path
 
 
 def test_create_run_root_creates_unique_auto_directories(tmp_path, monkeypatch):
@@ -35,13 +37,14 @@ def test_create_run_root_uses_explicit_run_dir_once(tmp_path):
         run_ff.create_run_root(config, explicit, None)
 
 
-def test_resolve_stampfile_path_defaults_inside_run_root(tmp_path, monkeypatch):
+def test_resolve_stampfile_path_defaults_to_container_local_tmp(tmp_path, monkeypatch):
     run_root = tmp_path / "run-root"
     monkeypatch.delenv("STAMPFILE", raising=False)
 
     stamp, source = run_ff.resolve_stampfile_path(None, run_root)
 
-    assert stamp == run_root / "faketime_stamp"
+    assert stamp == default_stampfile_path(run_root)
+    assert Path(tempfile.gettempdir()) in stamp.parents
     assert source == "default"
 
 
@@ -79,11 +82,11 @@ def test_warn_on_implicit_stampfile_for_environment(tmp_path, capsys):
 
 
 def test_warn_on_implicit_stampfile_for_default(tmp_path, capsys):
-    stamp = tmp_path / "run-root" / "faketime_stamp"
+    stamp = default_stampfile_path(tmp_path / "run-root")
 
     run_ff.warn_on_implicit_stampfile(stamp, "default")
 
     captured = capsys.readouterr()
     assert "WARNING:" in captured.err
-    assert "default faketime stamp file" in captured.err
+    assert "default container-local faketime stamp file" in captured.err
     assert str(stamp) in captured.err

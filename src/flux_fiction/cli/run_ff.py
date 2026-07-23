@@ -20,6 +20,7 @@ import hashlib
 from typing import Any
 
 from flux_fiction.api.status import RunStatusWriter, utcnow_iso
+from flux_fiction.faketime_paths import default_stampfile_path
 from flux_fiction.telemetry import TelemetryClient
 
 
@@ -122,7 +123,7 @@ def write_flux_fiction_toml(path: Path, data: dict[str, Any]) -> None:
 def drop_faketime_env(env: dict[str, str]) -> dict[str, str]:
     cleaned = dict(env)
     for key in list(cleaned):
-        if key == "LD_PRELOAD" or key.startswith("FAKETIME_"):
+        if key in {"LD_PRELOAD", "FAKETIME", "STAMPFILE"} or key.startswith("FAKETIME_"):
             cleaned.pop(key, None)
     return cleaned
 
@@ -284,7 +285,7 @@ def resolve_stampfile_path(
     if env_stamp:
         return remap_path(env_stamp, for_output=True), "environment"
 
-    return run_root / "faketime_stamp", "default"
+    return default_stampfile_path(run_root), "default"
 
 
 def warn_on_implicit_stampfile(path: Path, source: str) -> None:
@@ -296,7 +297,7 @@ def warn_on_implicit_stampfile(path: Path, source: str) -> None:
         )
     elif source == "default":
         print(
-            "WARNING: using default faketime stamp file inside the run directory: "
+            "WARNING: using default container-local faketime stamp file: "
             f"{path}",
             file=sys.stderr,
         )
@@ -580,7 +581,7 @@ def main() -> int:
         default=None,
         help=(
             "Path to the libfaketime timestamp file. Default: a unique "
-            "faketime_stamp file inside the run directory."
+            "container-local temp path derived from the run directory."
         ),
     )
     parser.add_argument(
@@ -600,6 +601,15 @@ def main() -> int:
         help=(
             "Flux broker log-level attribute. Default 6 keeps info and above; "
             "use 7 for debug."
+        ),
+    )
+    parser.add_argument(
+        "--no-broker-log-file",
+        action="store_true",
+        help=(
+            "Do not configure Flux's log-filename sink. Broker errors remain "
+            "visible in the captured run log, while high-volume broker debug "
+            "traffic is kept off the filesystem."
         ),
     )
     parser.add_argument(
@@ -683,7 +693,7 @@ def main() -> int:
         faketime_timestamp_file=stampfile,
     )
 
-    env = os.environ.copy()
+    env = drop_faketime_env(os.environ.copy())
     configure_flux_env(env)
     env.setdefault(
         "FLUX_FICTION_PATH_MAP",
@@ -716,15 +726,17 @@ def main() -> int:
     inner_script_path = run_root / "run_inner.sh"
     write_inner_script(inner_script_path, inner_script)
     flux_exe = shutil.which("flux", path=env.get("PATH")) or "flux"
-    cmd = [
-        flux_exe,
-        "start",
-        f"--setattr=log-filename={broker_log}",
-        f"--setattr=log-level={args.broker_log_level}",
-        "--",
-        "bash",
-        str(inner_script_path),
-    ]
+    cmd = [flux_exe, "start"]
+    if not args.no_broker_log_file:
+        cmd.append(f"--setattr=log-filename={broker_log}")
+    cmd.extend(
+        [
+            f"--setattr=log-level={args.broker_log_level}",
+            "--",
+            "bash",
+            str(inner_script_path),
+        ]
+    )
 
     bridge_cmd = None
     bridge_extra_lines: list[str] = []
@@ -760,7 +772,10 @@ def main() -> int:
     print(f"Source config:    {source_config}")
     print(f"Generated config: {generated_config}")
     print(f"Output dir:       {output_dir}")
-    print(f"Broker log:       {broker_log}")
+    if args.no_broker_log_file:
+        print("Broker log:       disabled (errors remain in run.log)")
+    else:
+        print(f"Broker log:       {broker_log}")
     print(f"Run log:          {stdout_log}")
     if not args.no_faketime:
         print(f"Stamp file:       {stampfile}")
@@ -852,12 +867,13 @@ def main() -> int:
                     errors="replace",
                     start_new_session=True,
                 )
-                broker_watch = threading.Thread(
-                    target=_watch_broker_log_for_fatal_error,
-                    args=(broker_log, proc, detected_fatal_error, run_root),
-                    daemon=True,
-                )
-                broker_watch.start()
+                if not args.no_broker_log_file:
+                    broker_watch = threading.Thread(
+                        target=_watch_broker_log_for_fatal_error,
+                        args=(broker_log, proc, detected_fatal_error, run_root),
+                        daemon=True,
+                    )
+                    broker_watch.start()
                 assert proc.stdout is not None
                 for line in proc.stdout:
                     if interrupted_reason is not None:
