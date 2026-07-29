@@ -10,6 +10,7 @@ except ImportError:
     _dft_available = False
 
 from dataclasses import dataclass
+import ctypes
 import logging
 import os
 from pathlib import Path
@@ -20,6 +21,49 @@ import time
 from typing import Callable, Optional
 
 logger = logging.getLogger(__name__)
+
+_SHARED_CLOCK_ENV = "FAKETIME_SHARED_CLOCK"
+
+
+class _CtypesSharedClock:
+    """Thin binding to the API exported by an LD_PRELOADed libfaketime."""
+
+    def __init__(self) -> None:
+        process = ctypes.CDLL(None, use_errno=True)
+        try:
+            available = process.faketime_shared_clock_available
+            set_realtime = process.faketime_set_realtime_ns
+        except AttributeError as exc:
+            raise RuntimeError(
+                "shared libfaketime clock requested, but the preloaded library "
+                "does not export faketime_shared_clock_available and "
+                "faketime_set_realtime_ns"
+            ) from exc
+
+        available.argtypes = []
+        available.restype = ctypes.c_int
+        set_realtime.argtypes = [ctypes.c_int64]
+        set_realtime.restype = ctypes.c_int
+        if available() != 1:
+            error = ctypes.get_errno()
+            detail = os.strerror(error) if error else "shared state is inactive"
+            raise RuntimeError(
+                f"shared libfaketime clock requested, but unavailable: {detail}"
+            )
+        self._set_realtime = set_realtime
+
+    def set_realtime_ns(self, target_ns: int) -> None:
+        if self._set_realtime(int(target_ns)) != 0:
+            error = ctypes.get_errno()
+            detail = os.strerror(error) if error else "unknown libfaketime error"
+            raise RuntimeError(f"could not update shared libfaketime clock: {detail}")
+
+
+def _load_shared_clock() -> _CtypesSharedClock:
+    # LD_PRELOAD libraries are in the process-global symbol scope, so loading
+    # the main program avoids a second dlopen and guarantees this binding uses
+    # the same mapped state as intercepted time calls.
+    return _CtypesSharedClock()
 
 
 def _clean_real_time() -> float:
@@ -100,7 +144,7 @@ class FakeTimeDecision:
 
 class FakeTimeController:
     """
-    Control libfaketime via a relative FAKETIME_TIMESTAMP_FILE offset.
+    Control libfaketime through its shared clock or a timestamp-file offset.
 
     ``initial_epoch`` is the fake wall-clock timestamp corresponding to
     simulation time zero, so target fake wall time is:
@@ -123,6 +167,8 @@ class FakeTimeController:
         real_time: Optional[Callable[[], float]] = None,
         fake_time: Optional[Callable[[], float]] = None,
         seed: bool = True,
+        shared_clock: Optional[bool] = None,
+        shared_clock_setter: Optional[Callable[[int], None]] = None,
     ) -> None:
         self.timestamp_file = Path(timestamp_file)
         self.initial_epoch = float(initial_epoch or 0.0)
@@ -131,9 +177,25 @@ class FakeTimeController:
         self._real_time = real_time or _clean_real_time
         self._fake_time = fake_time or time.time
         self._offset: Optional[float] = None
+        self.shared_clock = (
+            os.environ.get(_SHARED_CLOCK_ENV) == "1"
+            if shared_clock is None
+            else bool(shared_clock)
+        )
+        self._set_shared_realtime: Optional[Callable[[int], None]] = None
+
+        if self.shared_clock:
+            if shared_clock_setter is not None:
+                self._set_shared_realtime = shared_clock_setter
+            else:
+                self._set_shared_realtime = _load_shared_clock().set_realtime_ns
 
         if seed:
             self.seed(0.0)
+        elif self.shared_clock:
+            # The launcher initializes the shared page before Flux starts. An
+            # exec'd controller attaches to it and must not reseed it.
+            pass
         elif self.timestamp_file.exists():
             self._offset = self._read_offset()
         else:
@@ -157,6 +219,12 @@ class FakeTimeController:
             except Exception as e:
                 logger.debug("Failed to log faketime_seed event: %s", e)
         target = self.target_time(simulation_time)
+        if self.shared_clock:
+            assert self._set_shared_realtime is not None
+            self._set_shared_realtime(self.target_time_ns(simulation_time))
+            logger.info("Seeded shared faketime clock to target=%0.9f", target)
+            return FakeTimeDecision("seeded", target, target, 0.0)
+
         now = self._real_time()
         offset = target - now
         self._write_offset(offset)
@@ -170,6 +238,10 @@ class FakeTimeController:
 
     def target_time(self, simulation_time: float) -> float:
         return self.initial_epoch + float(simulation_time)
+
+    def target_time_ns(self, simulation_time: float) -> int:
+        """Return the absolute fake epoch as integer nanoseconds."""
+        return int(round(self.target_time(simulation_time) * 1_000_000_000))
 
     def current_effective_time(self, *, fake_now: Optional[float] = None) -> float:
         return self._fake_time() if fake_now is None else float(fake_now)
@@ -228,6 +300,16 @@ class FakeTimeController:
                         self._offset or 0.0,
                     )
                 time.sleep(min(0.01, max(0.0, target - effective)))
+
+        if self.shared_clock:
+            assert self._set_shared_realtime is not None
+            self._set_shared_realtime(self.target_time_ns(simulation_time))
+            logger.info(
+                "Pinned shared faketime clock to %0.9f (effective was %0.9f)",
+                target,
+                effective,
+            )
+            return FakeTimeDecision("jumped", target, target, 0.0)
 
         if self._offset is None:
             self._offset = self._read_offset()

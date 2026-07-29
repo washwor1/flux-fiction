@@ -114,6 +114,35 @@ Locate the built or installed jobtap plugin:
 flux-fiction-jobtap-path
 ```
 
+### Shared-clock faketime
+
+The default `legacy` mode remains compatible with stock libfaketime and updates
+a timestamp file on `/dev/shm`. For clock-heavy tracing workloads, build the
+optimized fork and select its lock-free shared clock explicitly:
+
+```bash
+cd /g/g14/ashworth12/workspace/ff-podman/libfaketime-shared-clock
+make CC=/usr/bin/gcc
+
+FAKETIME_LIB="$PWD/src/libfaketimeMT.so.1" \
+  flux-fiction-run /path/to/config.toml --faketime-mode shared
+```
+
+The launcher sets `FAKETIME_SHARED_CLOCK=1` and an integer-nanosecond initial
+epoch for `flux start`; the internal shared-memory identity is inherited by the
+broker, scheduler, Flux Fiction controller, and their fork/exec descendants.
+The controller calls the library's exported `faketime_set_realtime_ns()` symbol
+through `ctypes.CDLL(None)`. Shared mode does not set `FAKETIME_NO_CACHE`, reread
+a timestamp file, or spawn a helper Python process to obtain real wall time.
+Startup fails clearly if the preloaded library lacks the API or cannot attach to
+a compatible shared page.
+
+Force the stock behavior with `--faketime-mode legacy`, or set the default for
+the harness with `FLUX_FICTION_FAKETIME_MODE=shared|legacy`. `FAKETIME_LIB` (or
+`--faketime-lib`) selects the library. The optimized mode currently requires
+POSIX shared memory and lock-free 64-bit atomics; it changes realtime-family
+APIs only, and the launcher continues to preserve real monotonic clocks.
+
 ## Dependencies
 
 ### Runtime Dependencies
@@ -361,9 +390,9 @@ failures with log paths, active Flux jobs, and the campaign root.
 - `load_jobtap.sh` now prefers an already prepared Flux environment and only
   sources `/usr/local/bin/flux-dev-env.sh` as a fallback if `flux` is not
   already available.
-- `flux-fiction-run` defaults faketime to a unique container-local temp stamp
-  file and warns when it uses either an inherited `STAMPFILE` environment
-  variable or the default temp-backed path.
+- `flux-fiction-run` defaults to compatible legacy faketime mode and a unique
+  container-local temp stamp file. `--faketime-mode shared` opts into the
+  optimized library API without timestamp-file refreshes.
 - The preferred development path is the Podman container because it keeps Flux,
   scheduler, Python, and native dependencies aligned.
 - A reusable sample manifest lives at

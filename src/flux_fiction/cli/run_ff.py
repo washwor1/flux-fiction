@@ -383,6 +383,40 @@ def default_faketime_lib() -> str:
     return candidates[0]
 
 
+def build_faketime_environment(
+    faketime_lib: Path,
+    stamp_path: Path,
+    initial_fake_time: float,
+    mode: str,
+) -> dict[str, str]:
+    """Build the environment inherited by Flux and its complete process tree."""
+    env = {
+        "FLUX_LOAD_WITH_DEEPBIND": "0",
+        "LD_PRELOAD": str(faketime_lib),
+        # Flux's broker/reactor uses monotonic timers for internal progress.
+        "FAKETIME_DONT_FAKE_MONOTONIC": "1",
+    }
+    if mode == "shared":
+        env.update(
+            {
+                "FAKETIME_SHARED_CLOCK": "1",
+                "FAKETIME_SHARED_CLOCK_INITIAL_NS": str(
+                    int(round(initial_fake_time * 1_000_000_000))
+                ),
+            }
+        )
+    elif mode == "legacy":
+        env.update(
+            {
+                "FAKETIME_TIMESTAMP_FILE": str(stamp_path),
+                "FAKETIME_NO_CACHE": "1",
+            }
+        )
+    else:
+        raise ValueError(f"unsupported faketime mode: {mode}")
+    return env
+
+
 def configure_flux_env(env: dict[str, str]) -> None:
     prefix = Path(env.get("FLUX_PREFIX", str(default_flux_prefix())))
     if not prefix.exists():
@@ -669,8 +703,18 @@ def main() -> int:
         "--stampfile",
         default=None,
         help=(
-            "Path to the libfaketime timestamp file. Default: a unique "
-            "container-local temp path derived from the run directory."
+            "Legacy-mode libfaketime timestamp file. Default: a unique "
+            "container-local temp path derived from the run directory; unused "
+            "as a clock source in shared mode."
+        ),
+    )
+    parser.add_argument(
+        "--faketime-mode",
+        choices=("legacy", "shared"),
+        default=os.environ.get("FLUX_FICTION_FAKETIME_MODE", "legacy"),
+        help=(
+            "Clock update mechanism: legacy rereads --stampfile; shared uses "
+            "the optimized libfaketime API (default: legacy)."
         ),
     )
     parser.add_argument(
@@ -807,12 +851,16 @@ def main() -> int:
     stampfile_source = None
     if not args.no_faketime:
         stamp_path, stampfile_source = resolve_stampfile_path(args.stampfile, run_root)
-        warn_on_implicit_stampfile(stamp_path, stampfile_source)
+        if args.faketime_mode == "legacy":
+            warn_on_implicit_stampfile(stamp_path, stampfile_source)
     stampfile = None if stamp_path is None else str(stamp_path)
     status.update(
         config_file=str(generated_config),
         trace_file=str(trace_path),
-        faketime_timestamp_file=stampfile,
+        faketime_timestamp_file=(
+            stampfile if not args.no_faketime and args.faketime_mode == "legacy" else None
+        ),
+        faketime_mode=None if args.no_faketime else args.faketime_mode,
     )
 
     env = drop_faketime_env(os.environ.copy())
@@ -834,21 +882,18 @@ def main() -> int:
 
         first_submit = first_submit_epoch(trace_path)
         initial_fake_time = first_submit - max(0.0, float(args.faketime_start_lead))
-        if not args.dry_run:
+        if not args.dry_run and args.faketime_mode == "legacy":
             assert stamp_path is not None
             stamp_path.parent.mkdir(parents=True, exist_ok=True)
             stamp_path.write_text(f"{initial_fake_time - time.time():+.9f}s\n")
 
-        faketime_env = {
-            "FLUX_LOAD_WITH_DEEPBIND": "0",
-            "LD_PRELOAD": str(faketime_lib),
-            "FAKETIME_TIMESTAMP_FILE": str(stamp_path),
-            "FAKETIME_NO_CACHE": "1",
-            # Flux's broker/reactor uses monotonic timers for internal
-            # progress. Faking CLOCK_MONOTONIC while the simulation jumps wall
-            # time forward causes libev to spin under large timestamp updates.
-            "FAKETIME_DONT_FAKE_MONOTONIC": "1",
-        }
+        assert stamp_path is not None
+        faketime_env = build_faketime_environment(
+            faketime_lib,
+            stamp_path,
+            initial_fake_time,
+            args.faketime_mode,
+        )
         env.update(faketime_env)
 
     inner_script = build_inner_script(ff_root, generated_config, stampfile)
@@ -884,6 +929,10 @@ def main() -> int:
             "unset FAKETIME_TIMESTAMP_FILE",
             "unset FAKETIME_NO_CACHE",
             "unset FAKETIME_DONT_FAKE_MONOTONIC",
+            "unset FAKETIME_SHARED_CLOCK",
+            "unset FAKETIME_SHARED_CLOCK_INITIAL_NS",
+            "unset FAKETIME_SHARED_CLOCK_SHM",
+            "unset FAKETIME_SHARED",
             " ".join(shell_quote(part) for part in bridge_cmd) + " &",
             "bridge_pid=$!",
             "trap 'kill ${bridge_pid} 2>/dev/null || true; wait ${bridge_pid} 2>/dev/null || true' EXIT",
@@ -911,7 +960,10 @@ def main() -> int:
     if dftracer_env:
         print(f"DFTracer prefix:  {dftracer_env['DFTRACER_LOG_FILE']}")
     if not args.no_faketime:
-        print(f"Stamp file:       {stampfile}")
+        if args.faketime_mode == "legacy":
+            print(f"Stamp file:       {stampfile}")
+        else:
+            print("Faketime mode:    shared memory")
         print(f"First submit:     {first_submit:.6f}")
         print(f"Faketime lead:    {max(0.0, float(args.faketime_start_lead)):.6f}s")
     if args.otel:

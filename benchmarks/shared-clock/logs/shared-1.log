@@ -1,0 +1,105 @@
+Source config:    /workspace/flux-fiction/src/config.toml
+Generated config: /tmp/flux-fiction-shared-clock-e2e/config.toml
+Output dir:       /tmp/flux-fiction-shared-clock-e2e/output
+Broker log:       /tmp/flux-fiction-shared-clock-e2e/broker.log
+Run log:          /tmp/flux-fiction-shared-clock-e2e/run.log
+Faketime mode:    shared memory
+First submit:     1546300800.000000
+Faketime lead:    30.000000s
+Reproducer:       /tmp/flux-fiction-shared-clock-e2e/reproduce.sh
+
+Command:
+/workspace/container-installs/flux-core/bin/flux start --setattr=log-filename=/tmp/flux-fiction-shared-clock-e2e/broker.log --setattr=log-level=6 -- bash /tmp/flux-fiction-shared-clock-e2e/run_inner.sh
+
+Jobs completed:   0%|          | 0/10 [00:00<?, ?job/s]
+Jobs completed:  10%|█         | 1/10 [06:25<57:50, 385.58s/job]
+Jobs completed:  40%|████      | 4/10 [12:25<17:01, 170.24s/job]
+Jobs completed:  70%|███████   | 7/10 [18:25<07:09, 143.28s/job]
+Jobs completed: 100%|██████████| 10/10 [24:25<00:00, 133.18s/job]
+Jobs completed: 100%|██████████| 10/10 [24:25<00:00, 146.56s/job]
+
+Makespan (hours): 0.4
+Total Core-Hours: 192.0
+Used Core-Hours: 160.0
+Average Core-Utilization: 83.33%
+Total Node-Hours: 12.0
+Used Node-Hours: 10.0
+Average Node-Utilization: 83.33%
+Resource usage CSV: /tmp/flux-fiction-shared-clock-e2e/output/resource_usage_timeseries.csv
+Resource allocation CSV: /tmp/flux-fiction-shared-clock-e2e/output/resource_allocations.csv
+Resource utilization plot: /tmp/flux-fiction-shared-clock-e2e/output/resource_utilization.png
+KVS content-sqlite dbfile_size start: 20480 bytes
+KVS content-sqlite dbfile_size end:   131072 bytes
+KVS bytes per completed job:          11059.20 bytes/job
+KVS growth rate:                      76.80 bytes/s (sim time)
+Average queue wait time: 432.000000 seconds (sim time) over 10 jobs
+Max queue wait time: 1080.000000 seconds (sim time)
+Flux module stats (sched-fluxion-qmanager):
+{
+  "queues": {
+    "default": {
+      "action_counts": {
+        "cancelled": 0,
+        "complete": 10,
+        "pending": 10,
+        "rejected": 0,
+        "reprioritized": 0,
+        "reserved": 0,
+        "running": 10
+      },
+      "max_queue_depth": 1000000,
+      "pending_queues": {
+        "blocked": [],
+        "pending": [],
+        "pending_provisional": []
+      },
+      "policy": "fcfs",
+      "policy_parameters": {},
+      "queue_depth": 32,
+      "queue_parameters": {},
+      "scheduled_queues": {
+        "canceled": [],
+        "rejected": [],
+        "running": []
+      }
+    }
+  }
+}
+Flux module stats (sched-fluxion-resource):
+{
+  "E": 510,
+  "V": 511,
+  "by_rank": {
+    "[0-29]": 17
+  },
+  "graph-uptime": 1465,
+  "load-time": 0.007322936,
+  "match": {
+    "failed": {
+      "max-match-iters": 2,
+      "max-match-jobid": 65632468992,
+      "njobs": 11,
+      "njobs-reset": 11,
+      "stats": {
+        "avg": 0.0003395611818181818,
+        "max": 0.000644845,
+        "min": 0.000177082,
+        "variance": 2.623340407814876e-08
+      }
+    },
+    "succeeded": {
+      "max-match-iters": 1,
+      "max-match-jobid": 64407732224,
+      "njobs": 20,
+      "njobs-reset": 20,
+      "stats": {
+        "avg": 0.00042834644999999996,
+        "max": 0.001329782,
+        "min": 0.000123931,
+        "variance": 1.1000257167374753e-07
+      }
+    }
+  },
+  "time-since-reset": 1468
+}
+f2ndEoSw

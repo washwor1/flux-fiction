@@ -1,0 +1,7 @@
+mode,repetition,order,wall_seconds,exit_code,jobs
+legacy,1,1,14.528857526,0,10
+shared,1,2,18.529622172,0,10
+shared,2,1,19.135839416,0,10
+legacy,2,2,16.438052749,0,10
+legacy,3,1,13.630855676,0,10
+shared,3,2,18.473859568,0,10

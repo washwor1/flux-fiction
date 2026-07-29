@@ -60,6 +60,25 @@ def test_drop_faketime_env_and_broker_log_matches(tmp_path: Path):
     assert run_ff.broker_log_matches(tmp_path / "missing.log", "x") == []
 
 
+def test_build_faketime_environment_selects_shared_or_legacy(tmp_path: Path):
+    library = tmp_path / "libfaketimeMT.so.1"
+    stamp = tmp_path / "stamp"
+
+    shared = run_ff.build_faketime_environment(library, stamp, 100.25, "shared")
+    assert shared["FAKETIME_SHARED_CLOCK"] == "1"
+    assert shared["FAKETIME_SHARED_CLOCK_INITIAL_NS"] == "100250000000"
+    assert "FAKETIME_TIMESTAMP_FILE" not in shared
+    assert "FAKETIME_NO_CACHE" not in shared
+
+    legacy = run_ff.build_faketime_environment(library, stamp, 100.25, "legacy")
+    assert legacy["FAKETIME_TIMESTAMP_FILE"] == str(stamp)
+    assert legacy["FAKETIME_NO_CACHE"] == "1"
+    assert "FAKETIME_SHARED_CLOCK" not in legacy
+
+    with pytest.raises(ValueError, match="unsupported faketime mode"):
+        run_ff.build_faketime_environment(library, stamp, 100.25, "bad")
+
+
 def test_first_submit_epoch_uses_t_submit_and_submit(tmp_path: Path):
     trace_a = tmp_path / "a.csv"
     trace_a.write_text("JobID,t_submit,Elapsed\n1,12.5,1\n", encoding="utf-8")

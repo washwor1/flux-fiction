@@ -17,6 +17,7 @@ if _tqdm_missing:
     sys.modules["tqdm"] = tqdm_stub
 
 from flux_fiction._core import events
+from flux_fiction._core import faketime as faketime_module
 from flux_fiction._core import models
 from flux_fiction._core.engine import Simulation
 from flux_fiction._core.faketime import FakeTimeController, _parse_relative_offset
@@ -80,6 +81,64 @@ def test_faketime_controller_can_adopt_existing_relative_offset(tmp_path):
     controller = FakeTimeController(stamp, fake_time=fake_clock, seed=False)
 
     assert controller.current_effective_time() == 1012.5
+
+
+def test_shared_clock_uses_integer_targets_without_timestamp_file(tmp_path):
+    stamp = tmp_path / "unused_stamp"
+    updates = []
+    fake_clock = ManualClock(100.0)
+
+    controller = FakeTimeController(
+        stamp,
+        initial_epoch=100.25,
+        fake_time=fake_clock,
+        shared_clock=True,
+        shared_clock_setter=updates.append,
+        seed=True,
+        near_event_threshold=0.0,
+    )
+    assert updates == [100_250_000_000]
+    assert not stamp.exists()
+
+    fake_clock.now = 100.5
+    decision = controller.advance_to(1.0)
+    assert decision.action == "jumped"
+    assert updates[-1] == 101_250_000_000
+    assert not stamp.exists()
+
+    fake_clock.now = 101.5
+    repeated = controller.advance_to(2.0)
+    assert repeated.action == "jumped"
+    assert updates[-1] == 102_250_000_000
+    assert len(updates) == 3
+    assert not stamp.exists()
+
+
+def test_shared_clock_rejects_unavailable_library(tmp_path, monkeypatch):
+    def unavailable():
+        raise RuntimeError("shared state is inactive")
+
+    monkeypatch.setattr(faketime_module, "_load_shared_clock", unavailable)
+    with pytest.raises(RuntimeError, match="shared state is inactive"):
+        FakeTimeController(tmp_path / "unused", shared_clock=True, seed=False)
+
+
+def test_shared_clock_preserves_forward_only_policy(tmp_path):
+    updates = []
+    fake_clock = ManualClock(105.0)
+    controller = FakeTimeController(
+        tmp_path / "unused",
+        initial_epoch=100.0,
+        fake_time=fake_clock,
+        shared_clock=True,
+        shared_clock_setter=updates.append,
+        seed=False,
+        near_event_threshold=0.0,
+    )
+
+    decision = controller.advance_to(1.0)
+    assert decision.action == "overrun"
+    assert updates == []
 
 
 def test_faketime_controller_waits_for_near_event(tmp_path):
