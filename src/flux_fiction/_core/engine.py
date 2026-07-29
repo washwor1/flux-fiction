@@ -40,6 +40,10 @@ logger = logging.getLogger(__name__)
 # How often (in time-steps) to stat the early-finalize sentinel. Cheap next to
 # the status.json write that already happens every step, but throttled anyway.
 EARLY_FINALIZE_CHECK_EVERY = 10
+FLUXION_MODULE_STATS = (
+    "sched-fluxion-qmanager",
+    "sched-fluxion-resource",
+)
 
 # tracer = get_tracer()
 
@@ -58,6 +62,47 @@ def _write_summary_file(path: str | None, payload: dict) -> None:
         json.dumps(payload, indent=2, sort_keys=True, default=str) + "\n",
         encoding="utf-8",
     )
+
+
+def _collect_flux_module_stats(adapter: Adapter) -> dict[str, dict]:
+    getter = getattr(adapter, "get_flux_module_stats", None)
+    if getter is None:
+        return {}
+
+    collected = {}
+    for module_name in FLUXION_MODULE_STATS:
+        try:
+            collected[module_name] = {"stats": getter(module_name)}
+        except Exception as e:
+            collected[module_name] = {"error": repr(e)}
+    return collected
+
+
+def _print_flux_module_stats(module_stats: dict[str, dict]) -> None:
+    for module_name in FLUXION_MODULE_STATS:
+        result = module_stats.get(module_name)
+        if not result:
+            continue
+
+        print(f"Flux module stats ({module_name}):")
+        if "error" in result:
+            print(f"  ERROR: {result['error']}")
+        else:
+            print(
+                json.dumps(
+                    result.get("stats", {}),
+                    indent=2,
+                    sort_keys=True,
+                    default=str,
+                )
+            )
+
+
+def _collect_scheduler_metrics(adapter: Adapter) -> dict:
+    getter = getattr(adapter, "get_scheduler_metrics", None)
+    if getter is None:
+        return {}
+    return getter()
 
 
 def run(
@@ -92,7 +137,7 @@ def run(
     resource_cores_per_node = int(resource_desc.get("cores_per_node") or config.ncpus)
     resource_gpus_per_node = int(resource_desc.get("gpus_per_node") or config.ngpus or 0)
 
-    #TODO understand how jobspec_shape is generated
+
     jobspec_shape = resource_desc.get("jobspec_shape", {})
     rabbit_storage = resource_desc.get("rabbit_storage", {})
     raw_jobspec_override = None
@@ -220,6 +265,9 @@ def run(
         simulation.telemetry.close()
         return EngineResult(ok=False, message=message)
 
+    scheduler_metrics = _collect_scheduler_metrics(adapter)
+    flux_module_stats = _collect_flux_module_stats(adapter)
+
     try:
         with simulation.telemetry.span("engine.adapter_close"):
             adapter.close()
@@ -285,6 +333,8 @@ def run(
         max_wait = max(waits)
         print(f"Max queue wait time: {max_wait:.6f} seconds (sim time)")
 
+    _print_flux_module_stats(flux_module_stats)
+
     observed_start_lags = sorted(
         float(job.flux_observed_start) - float(job.state_transitions["STARTED"])
         for job in simulation.job_map.values()
@@ -327,6 +377,8 @@ def run(
         "kvs_bytes_per_completed_job": float(kvs_bytes_per_completed),
         "kvs_growth_bytes_per_sim_s": float(kvs_growth_bytes_per_sim_s),
         "resource_summary": resource_summary,
+        "scheduler_metrics": scheduler_metrics,
+        "flux_module_stats": flux_module_stats,
     }
     _write_summary_file(getattr(config, "summary_file", None), summary_payload)
     simulation.telemetry.end_span(run_span_id, state="succeeded", makespan_seconds=float(makespan))
