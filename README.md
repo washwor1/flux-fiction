@@ -286,6 +286,67 @@ Important notes:
 - Common local outputs include `otel_spans.jsonl`, `otel_bridge.log`, and
   sometimes `otel_summary.csv`.
 
+## Ensemble Campaigns
+
+`flux-fiction-ensemble` (or `python3 -m flux_fiction_ensemble`) builds large campaign grids without materializing every
+trace and config up front. The campaign root stores compact `tasks.jsonl`,
+`batches.jsonl`, state, and status files. Each one-node batch job generates only
+its own shaken traces and scheduler configs, runs up to `batch_size` concurrent
+Flux Fiction tasks through `flux-fiction-run-parallel`, and removes generated
+trace CSVs by default after the batch finishes.
+
+Generate a starter spec:
+
+```bash
+flux-fiction-ensemble example ensemble.toml
+```
+
+Typical workflow:
+
+```bash
+flux-fiction-ensemble plan ensemble.toml
+flux-fiction-ensemble launch ensemble.toml --once --dry-run
+flux-fiction-ensemble run ensemble.toml
+flux-fiction-ensemble run ensemble.toml --poll
+flux-fiction-ensemble resume /p/lustre5/ashworth12/flux-fiction-ensemble/tuolumne-rabbit-shake/state.json
+flux-fiction-ensemble status /p/lustre5/ashworth12/flux-fiction-ensemble/tuolumne-rabbit-shake
+flux-fiction-ensemble serve /p/lustre5/ashworth12/flux-fiction-ensemble/tuolumne-rabbit-shake --port 8787
+```
+
+The spec supports:
+
+- input slicing with `input.slice_start` and `input.slice_count`
+- input shaking using interarrival perturbation, seed, duplicate count,
+  percentage of jobs shaken, degree in seconds, and optional relative cap
+- Rabbit storage injection with a selected job percentage and a request
+  distribution from `0` to `rabbit_ceiling_percentage * rabbit.capacity_gib`
+- scheduler JSON grids over `queue_policies` and `match_policies`
+- submission queues with per-queue `max_active` and `max_submit_per_hour`
+  throttles
+
+Campaign state is written atomically to `state.json`, and each accepted
+submission is flushed immediately. On resume, the launcher reconciles live Flux
+jobs by deterministic batch job names before submitting anything new, so a
+launcher or login-node failure does not require starting over. You can resume
+from the campaign root, `state.json`, `status.json`, or `campaign_spec.json`.
+Submission and job-state reconciliation use the Flux Python bindings through
+`flux python`; the regular campaign CLI can still run under the repository
+Python environment. Long-running `run` and `resume` loops use Flux eventlog
+watches and the Flux reactor to wake on job events between reconciliation ticks;
+`--poll` forces the older fixed-interval sleep behavior. Reactor watches are
+rebuilt from persisted Flux job IDs after restart, with the periodic
+reconciliation tick kept as a backstop for missed or purged eventlogs.
+
+Worker batches run inside `localhost/flux-fiction-dev:latest` by default,
+loading `/g/g14/ashworth12/workspace/ff-podman/flux-fiction-dev.tar` if the
+image is missing. The worker mounts the shared workspace, the campaign root, and
+`container-installs`, and forces faketime stamp files under `/dev/shm`.
+
+The status API exposes `GET /status`, `/tasks`, `/batches`, `/state`, and
+`/failures`. The most useful fields for an outside monitor are total task and
+batch counts, queued/submitted/pending/running/succeeded/failed batches, recent
+failures with log paths, active Flux jobs, and the campaign root.
+
 ## Repository Notes
 
 - `util/run_ff.py` remains as a source-tree compatibility wrapper around the
