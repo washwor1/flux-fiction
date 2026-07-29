@@ -77,13 +77,29 @@ RUN echo 'APT::Sandbox::User root;' > /etc/apt/apt.conf.d/00-apt-sandbox && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 
-RUN python3 -m pip install --break-system-packages \
+RUN python3 -m pip install --break-system-packages --ignore-installed \
         build \
         meson-python \
         opentelemetry-api \
         opentelemetry-sdk \
         opentelemetry-exporter-otlp-proto-http \
-        "dftracer @ git+https://github.com/LLNL/dftracer.git@develop"
+        "dftracer==2.1.0"
+
+# dftracer is pinned: 2.1.0 ships libdftracer_core.so.4.2.0 under dftracer/lib,
+# while later post-releases move it to lib64 with a different soname, and the
+# former @develop source URL no longer resolves. Fluxion modules built against
+# an earlier image carry a RUNPATH of /usr/lib/python3/dist-packages/dftracer/lib,
+# but pip installs under /usr/local/lib/python3.12/dist-packages, so bridge the
+# two instead of relinking those modules. Also register the real directory with
+# ld.so so the library resolves for consumers without that RUNPATH.
+RUN set -eux; \
+    dftdir="$(python3 -c 'import dftracer, os; print(os.path.dirname(dftracer.__file__))')"; \
+    test -e "$dftdir/lib/libdftracer_core.so.4.2.0"; \
+    mkdir -p /usr/lib/python3/dist-packages; \
+    ln -sfn "$dftdir" /usr/lib/python3/dist-packages/dftracer; \
+    echo "$dftdir/lib" > /etc/ld.so.conf.d/dftracer.conf; \
+    ldconfig; \
+    test -e /usr/lib/python3/dist-packages/dftracer/lib/libdftracer_core.so.4.2.0
 
 RUN mkdir -p /work /data /output /scratch
 

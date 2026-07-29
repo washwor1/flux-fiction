@@ -106,8 +106,14 @@ def reset_jobtap_plugin(
 import copy
 import json
 import logging
+import os
 from pathlib import Path
 
+
+
+def _env_path(name):
+    value = os.environ.get(name, "").strip()
+    return value or None
 
 
 
@@ -213,6 +219,22 @@ def reload_modules(flux_handle, config_source=None):
             resource_module_path = module["path"]
         elif "feasibility" in name:
             feasibility_module_path = module["path"]
+
+    resource_module_path = (
+        _env_path("FLUX_FICTION_RESOURCE_MODULE") or resource_module_path
+    )
+    fluxion_resource_path = (
+        _env_path("FLUX_FICTION_FLUXION_RESOURCE_MODULE")
+        or fluxion_resource_path
+    )
+    feasibility_module_path = (
+        _env_path("FLUX_FICTION_FLUXION_FEASIBILITY_MODULE")
+        or feasibility_module_path
+    )
+    fluxion_qmanager_path = (
+        _env_path("FLUX_FICTION_FLUXION_QMANAGER_MODULE")
+        or fluxion_qmanager_path
+    )
 
     logger.debug("Reloading '%s' and 'resource' modules", sched_module)
 
