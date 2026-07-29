@@ -124,12 +124,17 @@ def test_prepare_config_copies_json_and_rewrites_paths(tmp_path: Path, monkeypat
         },
     )
 
-    generated, trace_path, output_dir = run_ff.prepare_config(source_config, tmp_path / "run")
+    generated, trace_path, output_dir = run_ff.prepare_config(
+        source_config,
+        tmp_path / "run",
+        config_overrides={"submit_novalidate": True},
+    )
     payload = run_ff.load_toml(generated)["flux_fiction"]
 
     assert trace_path == trace
     assert Path(payload["config_json"]).exists()
     assert payload["output_dir"].endswith("/output/")
+    assert payload["submit_novalidate"] is True
     assert Path(output_dir).is_dir()
 
 
