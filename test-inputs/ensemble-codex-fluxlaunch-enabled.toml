@@ -1,0 +1,61 @@
+version = 1
+
+[campaign]
+name = "codex-fluxlaunch-enabled"
+output_root = "/p/lustre5/ashworth12/flux-fiction-ensemble-tuo/codex-perf"
+batch_size = 16
+poll_interval_seconds = 30
+walltime_minutes = 15
+keep_generated_traces = false
+no_faketime = false
+broker_log_level = 3
+no_broker_log_file = true
+finalize_reserve_seconds = 120
+
+[input]
+trace = "/usr/WS1/ashworth12/ff-podman/tuo_queueB_10k_sat.csv"
+format = "tuolumne"
+slice_start = 0
+slice_count = 10000
+cpus_per_node = 96
+
+[shake]
+duplicates = 1
+seed = 91001
+attributes = ["interarrival", "runtime", "nodes"]
+job_percentage = 10
+degree_seconds = 60
+relative_degree_percent = 10
+
+[rabbit]
+ceiling_basis = "rabbit_node"
+field_name = "RabbitGiB"
+mean_fraction = 0.5
+sigma_fraction = 0.16666666666666666
+tail_alpha = 1.5
+tail_min_gib = 100.0
+
+[grid]
+queue_policies = ["easy", "hybrid", "conservative"]
+match_policies = ["firstnodex", "lonodex"]
+rabbit_job_percentages = [0, 100]
+rabbit_ceiling_percentages = [0, 100]
+rabbit_distributions = ["gaussian", "pareto"]
+
+[flux]
+base_config = "/usr/WS1/ashworth12/ff-podman/flux-fiction-accuracy-tests/configs/tuo_pbatch.toml"
+base_config_json = "/usr/WS1/ashworth12/ff-podman/flux-fiction-accuracy-tests/configs/tuo_pbatch_scheduler.json"
+resource_R = "/usr/WS1/ashworth12/ff-podman/resource_graphs/tuolumne.json"
+
+[flux.config_overrides]
+make_plots = false
+async_submit = true
+
+[submission]
+queues = ["pdebug"]
+job_name_prefix = "codex-flux"
+backend = "flux"
+
+[submission.queue_limits.pdebug]
+max_active = 1
+max_submit_per_hour = 4

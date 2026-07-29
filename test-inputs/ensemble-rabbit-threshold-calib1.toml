@@ -1,0 +1,86 @@
+version = 1
+
+# Calibration run for ensemble-rabbit-threshold-sweep.toml.
+#
+# Three questions, one pdebug hour:
+#   1. What per-simulation rate do we get at 16-way packing on the REAL input
+#      dataset? Rate is strongly workload-dependent, and the only prior number
+#      (~2,400-2,600 jobs/55 min for the slow policies) came from a different
+#      slice with one simulation alone on a node.
+#   2. How much do the rabbit requests themselves slow the scheduler? Every
+#      policy cell here carries a zero-rabbit control and two rj=100/rc=100
+#      cells, so the control-vs-loaded rate difference is measured directly.
+#   3. Does the early-finalize path actually fire? It is wired
+#      (worker epoch -> walltime budget -> .finalize_now -> engine) but has
+#      never run in a real campaign. Every task here is expected to hit the
+#      wall, so every task should exercise it.
+#
+# 18 tasks at batch_size 16 deliberately splits into 16 + 2. The 16-task batch
+# is the calibration proper; the 2-task batch runs the same workload nearly
+# unloaded on its own node, which gives a direct read on the packing penalty.
+
+[campaign]
+name = "rabbit-threshold-calib1"
+output_root = "/p/lustre5/ashworth12/flux-fiction-ensemble-tuo"
+batch_size = 1
+poll_interval_seconds = 30
+# pdebug caps at 1 h. 55 min leaves margin for the image load and teardown.
+walltime_minutes = 55
+keep_generated_traces = false
+no_faketime = false
+broker_log_level = 3
+no_broker_log_file = true
+# Finalize fires at 55 min - 240 s = 51 min. All 16 replicas finalize at once
+# and contend for the filesystem, which is itself part of what this measures.
+finalize_reserve_seconds = 240
+
+# Identical to the real campaign -- the whole point is to measure the rate on
+# THIS workload.
+[input]
+trace = "/usr/WS1/ashworth12/ff-podman/tuo_queueB_10k_sat.csv"
+format = "tuolumne"
+slice_start = 0
+slice_count = 10000
+cpus_per_node = 96
+
+[shake]
+duplicates = 1
+seed = 91001
+attributes = ["interarrival", "runtime", "nodes"]
+job_percentage = 10
+degree_seconds = 60
+relative_degree_percent = 10
+
+[rabbit]
+ceiling_basis = "rabbit_node"
+field_name = "RabbitGiB"
+mean_fraction = 0.5
+sigma_fraction = 0.16666666666666666
+tail_alpha = 1.5
+tail_min_gib = 100.0
+
+[grid]
+# All six policy cells, and the rabbit axis at its extremes only: rj=rc=0 (the
+# control) against rj=100/rc=100 (every job may request up to a full rabbit) in
+# both distributions. 3 tasks per policy cell x 6 cells = 18.
+queue_policies = ["conservative"]
+match_policies = ["lonodex"]
+rabbit_job_percentages = [0]
+rabbit_ceiling_percentages = [0]
+rabbit_distributions = ["gaussian"]
+
+[flux]
+base_config = "/usr/WS1/ashworth12/ff-podman/flux-fiction-accuracy-tests/configs/tuo_pbatch.toml"
+base_config_json = "/usr/WS1/ashworth12/ff-podman/flux-fiction-accuracy-tests/configs/tuo_pbatch_scheduler.json"
+resource_R = "/usr/WS1/ashworth12/ff-podman/resource_graphs/tuolumne.json"
+
+[flux.config_overrides]
+make_plots = false
+
+[submission]
+queues = ["pdebug"]
+job_name_prefix = "ffe-calib1"
+backend = "flux"
+
+[submission.queue_limits.pdebug]
+# Both batches at once so they share the same conditions.

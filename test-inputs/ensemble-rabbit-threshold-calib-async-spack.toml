@@ -1,0 +1,75 @@
+version = 1
+
+# Spack/host-runtime variant of ensemble-rabbit-threshold-calib-async.toml.
+# Use with `flux_fiction_ensemble launch --once` to submit the first 16-replica
+# batch only; the second 2-replica calibration batch remains queued.
+
+[campaign]
+name = "rabbit-threshold-calib-async-spack"
+output_root = "/p/lustre5/ashworth12/flux-fiction-ensemble-tuo"
+batch_size = 16
+poll_interval_seconds = 30
+walltime_minutes = 55
+keep_generated_traces = false
+no_faketime = false
+broker_log_level = 3
+no_broker_log_file = true
+# The first 16-way Spack/pinned pdebug run showed 240s was not enough to tear
+# down the local Flux instances and write batch_result.json before the wall.
+finalize_reserve_seconds = 600
+worker_runtime = "spack"
+flux_launch = true
+spack_fluxion_prefix = "/usr/WS1/ashworth12/package_managers/spack/opt/spack/linux-rhel8-x86_64/gcc-12.2.0/flux-sched-0.53.0-rben2bzg2txikxftd7w34mcio3u6mzdc"
+spack_faketime_prefix = "/usr/WS1/ashworth12/package_managers/spack/opt/spack/linux-rhel8-x86_64/gcc-12.2.0/faketime-0.9.10-n2lvnlfsett6t3xoh4h4hrfb7ew3bppo"
+spack_gcc_runtime = "/usr/WS1/ashworth12/package_managers/spack/opt/spack/linux-rhel8-x86_64/gcc-12.2.0/gcc-runtime-12.2.0-w244juoi3w2lwcowcvtkm6t5vqu5wd2t"
+spack_view = "/usr/WS1/ashworth12/package_managers/spack/var/spack/environments/emulator/.spack-env/view"
+spack_ninja_prefix = "/usr/WS1/ashworth12/package_managers/spack/opt/spack/linux-rhel8-x86_64/gcc-12.2.0/ninja-1.12.1-buf67bdsc6njmhhy3ipymclhnni74us2"
+meson_pythonpath = "/p/lustre5/ashworth12/flux-fiction-ensemble-tuo/codex-perf/host-python-deps/meson-1.8.2"
+
+[input]
+trace = "/usr/WS1/ashworth12/ff-podman/tuo_queueB_10k_sat.csv"
+format = "tuolumne"
+slice_start = 0
+slice_count = 10000
+cpus_per_node = 96
+
+[shake]
+duplicates = 1
+seed = 91001
+attributes = ["interarrival", "runtime", "nodes"]
+job_percentage = 10
+degree_seconds = 60
+relative_degree_percent = 10
+
+[rabbit]
+ceiling_basis = "rabbit_node"
+field_name = "RabbitGiB"
+mean_fraction = 0.5
+sigma_fraction = 0.16666666666666666
+tail_alpha = 1.5
+tail_min_gib = 100.0
+
+[grid]
+queue_policies = ["easy", "hybrid", "conservative"]
+match_policies = ["firstnodex", "lonodex"]
+rabbit_job_percentages = [0, 100]
+rabbit_ceiling_percentages = [0, 100]
+rabbit_distributions = ["gaussian", "pareto"]
+
+[flux]
+base_config = "/usr/WS1/ashworth12/ff-podman/flux-fiction-accuracy-tests/configs/tuo_pbatch.toml"
+base_config_json = "/usr/WS1/ashworth12/ff-podman/flux-fiction-accuracy-tests/configs/tuo_pbatch_scheduler.json"
+resource_R = "/usr/WS1/ashworth12/ff-podman/resource_graphs/tuolumne.json"
+
+[flux.config_overrides]
+make_plots = false
+async_submit = true
+submit_novalidate = true
+
+[submission]
+queues = ["pdebug"]
+job_name_prefix = "ffe-calibS"
+backend = "flux"
+
+[submission.queue_limits.pdebug]
+max_active = 1

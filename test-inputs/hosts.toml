@@ -1,0 +1,52 @@
+version = 1
+
+# Must be visible from every cluster. /usr/WS1 is globally mounted; the lustre
+# filesystems are NOT (tuolumne has lustre5, corona/dane have lustre1), so the
+# shared experiment context cannot live on lustre.
+shared_root = "/usr/WS1/ashworth12/ff-podman/ensemble-shared"
+
+# runs_per_node is how many simulations are packed onto one node (the campaign
+# batch_size). Scale it to the node's core count -- the simulator is largely
+# single-threaded, so cores bound how many replicas fit.
+#   tuolumne  96 cores/node  -> 16
+#   corona    48 cores/node  ->  8   (half of tuolumne's)
+#   dane     112 cores/node  -> 16
+#
+# share is the relative weight used to divide the task grid. Tasks are
+# interleaved, so each host gets a representative mix of the policy grid
+# rather than a contiguous block of one policy.
+
+[hosts.tuolumne]
+backend = "flux"
+queues = ["pdebug"]
+output_root = "/p/lustre5/ashworth12/flux-fiction-ensemble-tuo"
+runs_per_node = 16
+max_active = 8
+max_submit_per_hour = 30
+walltime_minutes = 55
+share = 2
+hostname_match = ["tuolumne"]
+
+[hosts.corona]
+backend = "flux"
+queues = ["pdebug"]
+output_root = "/p/lustre1/ashworth12/flux-fiction-ensemble-corona"
+runs_per_node = 8
+max_active = 8
+max_submit_per_hour = 30
+walltime_minutes = 55
+share = 1
+hostname_match = ["corona"]
+
+[hosts.dane]
+# Dane's native RJMS is Slurm: the launcher submits one single-node sbatch per
+# batch, exactly as the Flux hosts submit one single-node flux job per batch.
+backend = "slurm"
+queues = ["pdebug"]
+output_root = "/p/lustre1/ashworth12/flux-fiction-ensemble-dane"
+runs_per_node = 16
+max_active = 8
+max_submit_per_hour = 30
+walltime_minutes = 55
+share = 2
+hostname_match = ["dane"]

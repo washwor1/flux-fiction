@@ -1,0 +1,74 @@
+version = 1
+
+[campaign]
+name = "dane-pbatch-throughput"
+# Dane mounts lustre1/2/3 (no lustre5).
+output_root = "/p/lustre1/ashworth12/flux-fiction-ensemble-dane"
+# One task per flux job: 8 policy combos -> 8 jobs, each a full node.
+batch_size = 1
+poll_interval_seconds = 30
+# Must match the other hosts exactly -- the whole comparison is "how many jobs
+# in the same wall-clock budget". Dane pdebug caps at 1h, so allocate 60 min
+# and leave the worker budget at 55.
+walltime_minutes = 55
+keep_generated_traces = false
+no_faketime = false
+broker_log_level = 3
+no_broker_log_file = true
+# Held back from the walltime so a run that would be killed instead finalizes
+# and writes its outputs. MEASURED finalization: 6s @79 jobs, 37s @6006,
+# 39s @6275 -> ~5s fixed + 5.3s per 1000 completed jobs. ~60s at 10k jobs, so
+# 240s carries ~3x headroom (and covers a slower host).
+finalize_reserve_seconds = 240
+
+[input]
+trace = "/usr/WS1/ashworth12/ff-podman/tuo_pbatch.csv"
+format = "tuolumne"
+slice_start = 0
+slice_count = 20000
+cpus_per_node = 96
+
+[shake]
+duplicates = 1
+seed = 91001
+job_percentage = 0
+degree_seconds = 0
+
+[rabbit]
+# rc% is a percentage of ONE RABBIT NODE (16,308 GiB on the tuolumne graph),
+# not of the whole cluster's 1,174,176 GiB. rc=100 therefore means "a job may
+# request at most one full rabbit" -- the two bases differ by ~72x.
+ceiling_basis = "rabbit_node"
+distribution = "uniform"
+field_name = "RabbitGiB"
+
+[grid]
+# Identical grid to tuolumne/corona. Effective backfill reservation depth:
+#   fcfs - none | easy - 1 | hybrid - 128 | conservative - queue-depth (2048)
+queue_policies = ["fcfs", "easy", "hybrid", "conservative"]
+match_policies = ["firstnodex", "lonodex"]
+rabbit_job_percentages = [0]
+rabbit_ceiling_percentages = [0]
+
+[flux]
+# Same simulated machine (tuolumne graph) on every host: this experiment varies
+# the hardware running the simulator, not the workload being simulated.
+base_config = "/g/g14/ashworth12/workspace/ff-podman/flux-fiction-accuracy-tests/configs/tuo_pbatch.toml"
+base_config_json = "/g/g14/ashworth12/workspace/ff-podman/flux-fiction-accuracy-tests/configs/tuo_pbatch_scheduler.json"
+resource_R = "/usr/WS1/ashworth12/ff-podman/resource_graphs/tuolumne.json"
+
+[submission]
+# Dane's native RJMS is Slurm. The launcher submits one single-node sbatch job
+# per batch -- structurally identical to the Flux backend on tuolumne/corona,
+# where each batch is an independent single-node job handed to the system
+# scheduler. No personal Flux instance and no enclosing multi-node allocation:
+# batches queue and start independently, don't share fate, and no worker ends
+# up co-resident with the launcher.
+backend = "slurm"
+queues = ["pdebug"]
+job_name_prefix = "ffe-dane"
+
+[submission.queue_limits.pdebug]
+# Dane pdebug is 38 nodes / 1h, so all 8 can be active at once.
+max_active = 8
+max_submit_per_hour = 30

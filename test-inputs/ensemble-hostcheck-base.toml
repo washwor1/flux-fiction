@@ -1,0 +1,62 @@
+version = 1
+
+# Minimal end-to-end host check: does the container worker chain actually run on
+# this cluster? Verifies RJMS submit -> podman -> image load -> flux instance ->
+# simulation -> early finalize -> summary.json. It is NOT a throughput or
+# accuracy test; the slice cannot complete in 8 minutes and is not meant to.
+
+[campaign]
+name = "hostcheck"
+output_root = "PLACEHOLDER_ROOT"
+batch_size = 2
+poll_interval_seconds = 15
+walltime_minutes = 8
+keep_generated_traces = false
+no_faketime = false
+broker_log_level = 3
+no_broker_log_file = true
+# Finalize at 8 min - 180 s = 5 min, leaving 3 min to write outputs and tear
+# down. Exercises the same path the real campaign relies on.
+finalize_reserve_seconds = 180
+flux_launch = false
+
+[input]
+trace = "/usr/WS1/ashworth12/ff-podman/tuo_queueB_10k_sat.csv"
+format = "tuolumne"
+slice_start = 0
+slice_count = 500
+cpus_per_node = 96
+
+[shake]
+duplicates = 1
+seed = 91001
+attributes = ["interarrival", "runtime", "nodes"]
+job_percentage = 10
+degree_seconds = 60
+relative_degree_percent = 10
+
+[rabbit]
+ceiling_basis = "rabbit_node"
+field_name = "RabbitGiB"
+tail_alpha = 1.5
+tail_min_gib = 100.0
+
+[grid]
+queue_policies = ["easy"]
+match_policies = ["firstnodex", "lonodex"]
+rabbit_job_percentages = [0]
+rabbit_ceiling_percentages = [0]
+rabbit_distributions = ["gaussian"]
+
+[flux]
+base_config = "/usr/WS1/ashworth12/ff-podman/flux-fiction-accuracy-tests/configs/tuo_pbatch.toml"
+base_config_json = "/usr/WS1/ashworth12/ff-podman/flux-fiction-accuracy-tests/configs/tuo_pbatch_scheduler.json"
+resource_R = "/usr/WS1/ashworth12/ff-podman/resource_graphs/tuolumne.json"
+
+[flux.config_overrides]
+make_plots = false
+
+[submission]
+queues = ["pdebug"]
+job_name_prefix = "ffe-hc"
+backend = "PLACEHOLDER_BACKEND"

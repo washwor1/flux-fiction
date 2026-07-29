@@ -1,0 +1,82 @@
+version = 1
+
+# ACTIVE as of 2026-07-26: three-host split restored at the user's request.
+# Cells that cannot finish inside 24 h are simply excluded from the analysis --
+# a cell that cannot drain is itself evidence of poor utilization.
+#
+# Why: measured throughput for conservative/lonodex (the slowest cell) projects
+# a 10,000-job run at ~24 h on tuolumne, ~32 h on corona and ~61 h on dane,
+# against a 24 h pbatch ceiling. Work sent to dane or corona would most likely
+# hit the wall and return a job count with no makespan, which this experiment
+# cannot use. dane and corona are held at share = 0 rather than deleted so the
+# split can be restored if a shorter slice brings them under the ceiling.
+#
+# Host split for ensemble-rabbit-threshold-sweep.toml.
+#
+# Must be visible from every cluster. /usr/WS1 is globally mounted; the lustre
+# filesystems are NOT (tuolumne has lustre5, corona/dane have lustre1), so the
+# shared experiment context lives on the workspace filesystem and each host
+# writes its heavy outputs to its own lustre.
+shared_root = "/usr/WS1/ashworth12/ff-podman/ensemble-shared-rabbit-threshold"
+
+# Task division is weighted round-robin over `share`, interleaved, so each host
+# gets a representative mix of the policy grid rather than a block of one
+# policy. With the shares below, tuolumne takes all 12,060 tasks (754 batches at
+# 16 runs/node). The retired three-way split was 47/47/1, which gave corona 127
+# tasks = 16 batches and tuolumne and dane ~5,967 each.
+#
+# Changing these weights on an existing campaign root is refused -- it would
+# re-shuffle tasks underneath already-submitted work. They have to be right on
+# the first fresh root.
+
+# No host sets max_active or max_submit_per_hour: every batch is submitted in
+# the first launcher tick and the site scheduler orders them. Throttling here
+# would only queue work inside the launcher instead of inside the RJMS.
+#
+# Verified node-local scratch, which decides where each child broker's
+# content.sqlite lands (worker.sh picks FLUX_FICTION_SCRATCH_HOST_ROOT, else
+# /l/ssd if writable, else /var/tmp):
+#   tuolumne  /l/ssd = 200 GB disk    /tmp is tmpfs      501 GB RAM, 96 cores
+#   corona    /l/ssd = 3.5 TB NVMe    /tmp is tmpfs      251 GB RAM, 48 cores
+#   dane      NO local disk at all -- /var/tmp -> /tmp, both tmpfs, / is an
+#             overlay on the same tmpfs                  251 GB RAM, 112 cores
+#
+# So on dane the KVS is charged against RAM: 16 replicas x ~3.8 GB at 10k
+# completed jobs is ~60 GB of KVS on top of ~72 GB of simulator, ~132 GB of
+# 251 GB. It fits, but dane is the one host without headroom -- if a batch is
+# OOM-killed there, drop its runs_per_node to 8 rather than moving scratch to
+# lustre1 (KVS on a networked filesystem is far slower).
+
+[hosts.tuolumne]
+backend = "flux"
+queues = ["pbatch"]
+output_root = "/p/lustre5/ashworth12/flux-fiction-ensemble-tuo"
+# 16 sims x ~4.5 GB = ~72 GB of 501 GB; KVS goes to /l/ssd, not RAM.
+runs_per_node = 16
+walltime_minutes = 1440
+share = 47
+hostname_match = ["tuolumne"]
+
+[hosts.dane]
+# Dane's native RJMS is Slurm: one single-node sbatch per batch, structurally
+# the same as one single-node flux job per batch on the other two.
+backend = "slurm"
+queues = ["pbatch"]
+output_root = "/p/lustre1/ashworth12/flux-fiction-ensemble-dane"
+runs_per_node = 16
+walltime_minutes = 1440
+share = 47
+hostname_match = ["dane"]
+
+[hosts.corona]
+backend = "flux"
+queues = ["pbatch"]
+output_root = "/p/lustre1/ashworth12/flux-fiction-ensemble-corona"
+# 48 cores per node, so half of tuolumne's packing: 8 sims x ~4.5 GB = ~36 GB.
+runs_per_node = 8
+# corona's share yields exactly 16 batches; this makes that ceiling explicit
+# so a later grid change cannot silently push corona past 16 nodes.
+max_active = 16
+walltime_minutes = 1440
+share = 1
+hostname_match = ["corona"]

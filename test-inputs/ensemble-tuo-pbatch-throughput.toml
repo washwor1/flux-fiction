@@ -1,0 +1,73 @@
+version = 1
+
+[campaign]
+name = "tuo-pbatch-throughput"
+output_root = "/p/lustre5/ashworth12/flux-fiction-ensemble-tuo"
+# One task per flux job: 8 policy combos -> 8 pdebug jobs, each a full node.
+batch_size = 1
+poll_interval_seconds = 30
+# pdebug caps at 60 min; leave margin. This is the wall-clock budget the
+# "how many jobs completed before timeout" question is measured against.
+walltime_minutes = 55
+keep_generated_traces = false
+no_faketime = false
+# broker.log hit 2.3 GB per replica at level 6. Stop writing it entirely and
+# keep only errors on stderr (captured in run.log). Trade-off: the fatal-error
+# emergency dump keys off scanning broker.log, so it will not trigger --
+# re-run a single task with these re-enabled to debug a real failure.
+broker_log_level = 3
+no_broker_log_file = true
+# Held back from the walltime so a run that would be killed instead finalizes
+# and writes its outputs. MEASURED finalization: 6s @79 jobs, 37s @6006,
+# 39s @6275 -> ~5s fixed + 5.3s per 1000 completed jobs. ~60s at 10k jobs, so
+# 240s carries ~3x headroom (and covers a slower host).
+finalize_reserve_seconds = 240
+
+[input]
+trace = "/usr/WS1/ashworth12/ff-podman/tuo_pbatch.csv"
+format = "tuolumne"
+slice_start = 0
+slice_count = 20000
+cpus_per_node = 96
+
+# No shaking, no rabbit: replay the real pbatch jobs as-is.
+[shake]
+duplicates = 1
+seed = 91001
+job_percentage = 0
+degree_seconds = 0
+
+[rabbit]
+# rc% is a percentage of ONE RABBIT NODE (16,308 GiB on the tuolumne graph),
+# not of the whole cluster's 1,174,176 GiB. rc=100 therefore means "a job may
+# request at most one full rabbit" -- the two bases differ by ~72x.
+ceiling_basis = "rabbit_node"
+distribution = "uniform"
+field_name = "RabbitGiB"
+
+[grid]
+# 4 queue policies x 2 match policies = 8 tasks, one flux job each.
+# Effective backfill reservation depth per policy (verified in flux-sched):
+#   fcfs         - no backfill
+#   easy         - depth hard-coded to 1; ignores reservation-depth
+#   hybrid       - reservation-depth = 128 (set in tuo_pbatch_scheduler.json)
+#   conservative - MAX_RESERVATION_DEPTH clamped to queue-depth (2048)
+queue_policies = ["fcfs", "easy", "hybrid", "conservative"]
+match_policies = ["firstnodex", "lonodex"]
+rabbit_job_percentages = [0]
+rabbit_ceiling_percentages = [0]
+
+[flux]
+base_config = "/g/g14/ashworth12/workspace/ff-podman/flux-fiction-accuracy-tests/configs/tuo_pbatch.toml"
+base_config_json = "/g/g14/ashworth12/workspace/ff-podman/flux-fiction-accuracy-tests/configs/tuo_pbatch_scheduler.json"
+resource_R = "/usr/WS1/ashworth12/ff-podman/resource_graphs/tuolumne.json"
+
+[submission]
+queues = ["pdebug"]
+job_name_prefix = "ffe-tuo"
+
+[submission.queue_limits.pdebug]
+# All 8 policy combos run concurrently so each gets the same wall-clock budget
+# starting at the same time (staggered starts make the counts incomparable).
+max_active = 8
+max_submit_per_hour = 30

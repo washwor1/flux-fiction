@@ -1,0 +1,137 @@
+version = 1
+
+# Rabbit saturation threshold sweep.
+#
+# Question: at what point do rabbit requests become the dominant factor in
+# Tuolumne's utilization, as the FREQUENCY of rabbit-requesting jobs and the
+# SIZE of their requests both vary -- and does that point move with the queue
+# and match policy?
+#
+# Hypothesis: because no scheduling policy here accounts for rabbit storage,
+# a small number of rabbit requests can already inflate makespan through
+# fragmentation. Confirming that motivates a rabbit-aware policy.
+#
+# The measurement is makespan and achieved utilization, so every run has to
+# COMPLETE -- a walltime kill yields a job count and no makespan. The slice is
+# sized for that (see [input]).
+
+[campaign]
+name = "rabbit-threshold-sweep"
+# Overridden per host by hosts-rabbit-threshold.toml under `run-partial`;
+# kept here so the spec also works standalone on tuolumne.
+output_root = "/p/lustre5/ashworth12/flux-fiction-ensemble-tuo"
+batch_size = 16
+poll_interval_seconds = 120
+# pbatch's maximum. A batch releases its node as soon as its slowest task
+# finishes, so this is a ceiling and not a cost. A task that does reach it is
+# not lost: the parent watcher writes output/.finalize_now at
+# (budget - finalize_reserve_seconds) and the engine takes the normal
+# completion path, so the run still produces summary.json and the per-job
+# CSVs -- for however many jobs it got through.
+walltime_minutes = 1440
+keep_generated_traces = false
+no_faketime = false
+# broker.log reached 2.3 GB per replica at level 6, and that I/O competes with
+# the simulation being measured. Errors still reach stderr via run.log.
+broker_log_level = 3
+no_broker_log_file = true
+# Measured finalization is ~5 s fixed + 5.3 s per 1000 completed jobs, so a
+# 10k-job run needs ~60 s. 240 s carries ~3x headroom plus slower-host margin.
+# Measured 2026-07-26: post-sim analysis took 17-257 s per task at 16-way
+# packing, and 4 of 18 never reached it inside a 240 s reserve. Teardown
+# then has to cancel the in-flight simulated jobs on top of that.
+finalize_reserve_seconds = 900
+# Pinning OFF. The 16-way spack run with flux_launch=true regressed every
+# easy/firstnodex cell (one by 6.7x) while slow cells gained: an exclusive
+# core block stops a fast replica borrowing capacity its idle siblings are
+# leaving free. Matches the earlier scaling-experiment result.
+flux_launch = false
+
+[input]
+# Derived from tuo_data_chrono_clean.csv by util/make_queueb_slice.py:
+# queueB only (the pbatch-representative queue), sorted by submit time, and
+# restricted to one contiguous submit-time window so no job is submitted
+# before the window opens.
+#
+# The window (rows 174500:184500, 2026-01-16 09:44 -> 2026-01-22 13:09) was
+# chosen for this experiment, not just for size:
+#   offered load      96.8%   near saturation, so fragmentation can move the
+#                             makespan; below ~90% the cluster is rarely full
+#                             and the sweep reads flat regardless of policy
+#   max submit gap    60 min  no idle stretch that would let the queue drain
+#                             and reset accumulated fragmentation
+#   busiest hour      7.7%    not one of the trace's ~10k single-node job-array
+#                             bursts, which cannot fragment anything
+trace = "/usr/WS1/ashworth12/ff-podman/tuo_queueB_10k_sat.csv"
+format = "tuolumne"
+slice_start = 0
+slice_count = 10000
+cpus_per_node = 96
+
+[shake]
+# 10 replicas per grid cell. This multiplies the ENTIRE grid, so it is the
+# single largest cost lever in the campaign.
+duplicates = 10
+seed = 91001
+attributes = ["interarrival", "runtime", "nodes"]
+# Share of jobs perturbed, per attribute (each draws its own selection).
+job_percentage = 10
+# Interarrival magnitude is absolute; runtime and node count are perturbed by
+# +/- this share of each job's own value, since neither has a meaningful
+# absolute scale across a trace spanning seconds-to-a-day runtimes and
+# 1-to-256 node requests.
+degree_seconds = 60
+relative_degree_percent = 10
+
+[rabbit]
+# rc% is a percentage of ONE RABBIT NODE. On the tuolumne graph that is
+# 16,308 GiB, so rc=100 means "this job may request up to one full rabbit"
+# (~16 TB). Against the `cluster` basis the same number would mean a share of
+# all 1,174,176 GiB -- a ~72x difference, and a global capacity wall rather
+# than the fragmentation effect under test.
+ceiling_basis = "rabbit_node"
+field_name = "RabbitGiB"
+# Gaussian: centred mid-range with +/-3 sigma spanning [0, ceiling].
+mean_fraction = 0.5
+sigma_fraction = 0.16666666666666666
+# Long tail: most requests near the floor, power-law tail of large ones.
+# The floor matters as much as alpha -- the 1 GiB default against a 16 TiB
+# ceiling collapses the bulk to ~2 GiB, which is not a real allocation.
+tail_alpha = 1.5
+tail_min_gib = 100.0
+
+[grid]
+# Effective backfill reservation depth per policy (verified in flux-sched):
+#   easy         - depth hard-coded to 1; ignores reservation-depth
+#   hybrid       - reservation-depth = 128, set in tuo_pbatch_scheduler.json
+#   conservative - MAX_RESERVATION_DEPTH clamped to queue-depth (2048)
+queue_policies = ["easy", "hybrid", "conservative"]
+match_policies = ["firstnodex", "lonodex"]
+# 0 in both lists is the control. collapse_zero_rabbit keeps exactly one
+# control per policy cell per replica rather than re-running the 21 degenerate
+# pairings, and shares it across both distributions (a trace with no rabbit
+# requests cannot depend on the draw shape).
+rabbit_job_percentages = [0, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100]
+rabbit_ceiling_percentages = [0, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100]
+rabbit_distributions = ["gaussian", "pareto"]
+
+[flux]
+base_config = "/usr/WS1/ashworth12/ff-podman/flux-fiction-accuracy-tests/configs/tuo_pbatch.toml"
+base_config_json = "/usr/WS1/ashworth12/ff-podman/flux-fiction-accuracy-tests/configs/tuo_pbatch_scheduler.json"
+resource_R = "/usr/WS1/ashworth12/ff-podman/resource_graphs/tuolumne.json"
+
+[flux.config_overrides]
+# resource_usage_timeseries.csv and resource_allocations.csv are still written,
+# so nothing is lost -- only the per-run matplotlib render is skipped.
+make_plots = false
+
+[submission]
+queues = ["pbatch"]
+job_name_prefix = "ffe-rt"
+backend = "flux"
+
+[submission.queue_limits.pbatch]
+# Deliberately empty: no max_active and no max_submit_per_hour, so the first
+# launcher tick submits every batch at once and the site scheduler decides the
+# ordering. Setting either would hold batches back in the launcher instead.
+# The only packing limit is batch_size (16 tasks per node).

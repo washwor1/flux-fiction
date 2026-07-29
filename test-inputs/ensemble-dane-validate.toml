@@ -1,0 +1,60 @@
+version = 1
+
+[campaign]
+name = "dane-validate"
+# Dane mounts lustre1/2/3 (no lustre5).
+output_root = "/p/lustre1/ashworth12/flux-fiction-ensemble-dane"
+# One task per flux job: 8 policy combos -> 8 jobs, each a full node.
+batch_size = 1
+poll_interval_seconds = 30
+# Must match the other hosts exactly -- the whole comparison is "how many jobs
+# in the same wall-clock budget". Dane pdebug caps at 1h, so allocate 60 min
+# and leave the worker budget at 55.
+walltime_minutes = 15
+keep_generated_traces = false
+no_faketime = false
+broker_log_level = 3
+no_broker_log_file = true
+
+[input]
+trace = "/usr/WS1/ashworth12/ff-podman/tuo_pbatch.csv"
+format = "tuolumne"
+slice_start = 0
+slice_count = 300
+cpus_per_node = 96
+
+[shake]
+duplicates = 1
+seed = 91001
+job_percentage = 0
+degree_seconds = 0
+
+[rabbit]
+distribution = "uniform"
+field_name = "RabbitGiB"
+
+[grid]
+# Identical grid to tuolumne/corona. Effective backfill reservation depth:
+#   fcfs - none | easy - 1 | hybrid - 128 | conservative - queue-depth (2048)
+queue_policies = ["hybrid"]
+match_policies = ["firstnodex"]
+rabbit_job_percentages = [0]
+rabbit_ceiling_percentages = [0]
+
+[flux]
+# Same simulated machine (tuolumne graph) on every host: this experiment varies
+# the hardware running the simulator, not the workload being simulated.
+base_config = "/g/g14/ashworth12/workspace/ff-podman/flux-fiction-accuracy-tests/configs/tuo_pbatch.toml"
+base_config_json = "/g/g14/ashworth12/workspace/ff-podman/flux-fiction-accuracy-tests/configs/tuo_pbatch_scheduler.json"
+resource_R = "/usr/WS1/ashworth12/ff-podman/resource_graphs/tuolumne.json"
+
+[submission]
+# Dane's native RJMS is Slurm, so the launcher runs inside a personal Flux
+# instance (srun ... flux start). A personal instance has NO named queues --
+# an empty queue name tells the launcher to omit the queue attribute entirely.
+# Setting "pdebug" here would fail every submit with "invalid queue".
+queues = [""]
+job_name_prefix = "ffe-dane"
+
+# No queue_limits: the personal instance is exactly 8 nodes for 8 tasks, so all
+# 8 run concurrently and each gets the same 55-minute budget.

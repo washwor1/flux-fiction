@@ -1,0 +1,48 @@
+version = 1
+
+[campaign]
+name = "rabbit100-ensemble-smoke"
+output_root = "/p/lustre5/ashworth12/flux-fiction-ensemble-smoke"
+batch_size = 4
+poll_interval_seconds = 60
+walltime_minutes = 30
+keep_generated_traces = false
+no_faketime = false
+broker_log_level = 6
+
+[input]
+trace = "/g/g14/ashworth12/workspace/ff-podman/flux-fiction-accuracy-tests/data/rabbit_1500_topslot_100.csv"
+format = "sacct"
+slice_start = 0
+slice_count = 100
+cpus_per_node = 96
+
+[shake]
+duplicates = 1
+seed = 73001
+job_percentage = 50
+degree_seconds = 5
+relative_cap_percent = 100
+
+[rabbit]
+distribution = "uniform"
+field_name = "RabbitGiB"
+
+[grid]
+queue_policies = ["easy", "fcfs"]
+match_policies = ["firstnodex", "lonodex"]
+rabbit_job_percentages = [0, 50]
+rabbit_ceiling_percentages = [0, 10]
+
+[flux]
+base_config = "/g/g14/ashworth12/workspace/ff-podman/flux-fiction-accuracy-tests/configs/rabbit.toml"
+base_config_json = "/g/g14/ashworth12/workspace/ff-podman/flux-fiction-accuracy-tests/configs/rabbit_scheduler.json"
+resource_R = "/g/g14/ashworth12/workspace/ff-podman/resource_graphs/tuolumne_1chassis_pbatch_tuolumne1_buffered.json"
+
+[submission]
+queues = ["pdebug"]
+job_name_prefix = "ffe-smoke"
+
+[submission.queue_limits.pdebug]
+max_active = 4
+max_submit_per_hour = 20
