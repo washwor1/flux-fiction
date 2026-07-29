@@ -318,10 +318,37 @@ class FluxAdapter:
             return nodes, "flux_nodelist" if nodes else "missing"
         else:
             raise Exception("FluxAdapter.nodelist_lookup: flux handle is None")
+
+    def _submit_novalidate(self) -> bool:
+        return bool(getattr(self.simulation, "submit_novalidate", False))
         
     def submit_job(self, jobspec_json) -> int:
+        if self._submit_novalidate():
+            return flux.job.submit_async(
+                self._handle,
+                jobspec_json,
+                novalidate=True,
+            ).get_id()
         return flux.job.submit(self._handle, jobspec_json)
-                
+
+    def supports_async_submit(self) -> bool:
+        return True
+
+    def submit_job_async(self, jobspec_json):
+        # flux.job.submit() is submit_async() immediately followed by
+        # submit_get_id(), so it costs a full round-trip to the job manager for
+        # every job. Splitting the two lets a whole timestep's submissions be
+        # in flight at once; the ids are collected before the scheduler is told
+        # anything about them.
+        return flux.job.submit_async(
+            self._handle,
+            jobspec_json,
+            novalidate=self._submit_novalidate(),
+        )
+
+    def submit_get_id(self, handle) -> int:
+        return flux.job.submit_get_id(handle)
+
     def cancel_job(self, jobid):
         return flux.job.RAW.cancel(self._handle, jobid, "Canceled by emulator")
     

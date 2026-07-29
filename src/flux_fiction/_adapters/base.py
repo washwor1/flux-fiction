@@ -62,6 +62,26 @@ class Adapter(Protocol):
     def submit_job(self, jobspec_json: str) -> int:
         '''Submit a new job to the resource manager'''
 
+    def supports_async_submit(self) -> bool:
+        '''Whether submit_job_async/submit_get_id are usable on this adapter.
+
+        Adapters that cannot pipeline submissions return False and the engine
+        transparently falls back to the blocking path.
+        '''
+        return False
+
+    def submit_job_async(self, jobspec_json: str):
+        '''Start a submission and return a handle, without waiting for the id.
+
+        Every handle MUST be resolved through submit_get_id before the caller
+        relies on any job id, and before the scheduler is told what to expect.
+        '''
+        raise NotImplementedError("adapter does not support asynchronous submit")
+
+    def submit_get_id(self, handle) -> int:
+        '''Block until an asynchronous submission yields its job id.'''
+        raise NotImplementedError("adapter does not support asynchronous submit")
+
     def cancel_job(self, jobid: int) -> None:
         '''Cancel the job with {jobid} job id'''
     

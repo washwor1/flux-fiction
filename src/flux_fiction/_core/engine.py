@@ -119,6 +119,8 @@ def run(
         batch_job_starts=config.batch_job_starts,
         account_system_latency=config.account_system_latency,
         jobtap_logging=config.jobtap_logging,
+        async_submit=getattr(config, "async_submit", False),
+        submit_novalidate=getattr(config, "submit_novalidate", False),
         output_dir = config.output_dir,
         faketime_controller=faketime_controller,
         quiescent_accumulation_window=config.quiescent_accumulation_window,
@@ -244,6 +246,7 @@ def run(
             config.output_dir,
             config_json=config.config_json,
             config_exclusive=config.exclusive,
+            make_plots=getattr(config, "make_plots", True),
         )
 
     kvs_size_end = int(adapter.get_kvs_stats().get("dbfile_size", 0))
@@ -368,6 +371,8 @@ class Simulation(object):
             batch_job_starts: bool = True,
             account_system_latency: bool = True,
             jobtap_logging: bool = False,
+            async_submit: bool = False,
+            submit_novalidate: bool = False,
             output_dir: str = "./",
             faketime_controller: FakeTimeController | None = None,
             quiescent_accumulation_window: float = 0.0,
@@ -392,6 +397,20 @@ class Simulation(object):
         self.start_job_hook = start_job_hook
         self.complete_job_hook = complete_job_hook
         self.pending_continuation = False
+        # Jobs whose submission is in flight but whose id has not been
+        # collected yet. Drained before any quiescence traffic, so the
+        # scheduler is never told about a job whose id we do not hold.
+        self._pending_submits = []
+        self.async_submit = bool(async_submit) and bool(
+            getattr(adapter, "supports_async_submit", lambda: False)()
+        )
+        self.submit_novalidate = bool(submit_novalidate)
+        if async_submit and not self.async_submit:
+            logger.warning(
+                "async_submit requested but %s does not support it; "
+                "falling back to blocking submits",
+                type(adapter).__name__,
+            )
         self.step_expect = defaultdict(lambda: {"submits": 0, "finishes": 0})
         self.time_step = 0
         self.pending_start_msgs = {} 
@@ -496,6 +515,10 @@ class Simulation(object):
     def _send_quiescence_probe(self, *, final=False):
         if self.quiescence_inflight:
             return False
+        # Barrier: never probe, and never accumulate expectations, while a
+        # submission is still in flight. _flush_pending_quiescent_expect() is
+        # only reached from here, so this one call covers both.
+        self._drain_pending_submits()
         expect = self._flush_pending_quiescent_expect()
         probe_epoch = self.current_epoch
         bucket_time = float(self.current_time)
@@ -923,7 +946,13 @@ class Simulation(object):
                 if self.submit_job_hook:
                     self.submit_job_hook(self, job)
                 logger.debug("Submitting a new job")
-                job.submit(self.adapter)
+                if self.async_submit:
+                    # Start it and move on; the id is collected in
+                    # _drain_pending_submits() before any quiescence traffic.
+                    job.submit_async(self.adapter)
+                    self._pending_submits.append(job)
+                else:
+                    job.submit(self.adapter)
             except Exception as e:
                 job.record_state_transition("SUBMIT_FAILED", models.qtime(self.current_time))
                 self._fail(
@@ -938,8 +967,40 @@ class Simulation(object):
 
         self.num_submits += 1
         self.final_quiescence_probe_sent = False
+        if self.async_submit:
+            # job.jobid is not known yet; job_map is populated at drain time.
+            return
         self.job_map[job.jobid] = job
         logger.info("Submitted job {}".format(job.jobid))
+
+    def _drain_pending_submits(self):
+        """Collect the job id of every in-flight submission.
+
+        This is the barrier that makes asynchronous submission safe: it runs
+        before the scheduler is told what to expect and before any quiescence
+        probe, so from the scheduler's point of view the set of jobs present at
+        a given logical time is identical to the blocking path.
+        """
+        if not self._pending_submits:
+            return 0
+        pending, self._pending_submits = self._pending_submits, []
+        for job in pending:
+            try:
+                job.resolve_submit(self.adapter)
+            except Exception as e:
+                job.record_state_transition("SUBMIT_FAILED", models.qtime(self.current_time))
+                self._fail(
+                    "Submit failed (async resolve) for trace_idx={}: {}\nJobspec:\n{}"
+                    .format(
+                        getattr(job, "trace_index", None),
+                        e,
+                        json.dumps(job.jobspec, indent=2, sort_keys=True, default=str),
+                    )
+                )
+                raise
+            self.job_map[job.jobid] = job
+            logger.info("Submitted job {}".format(job.jobid))
+        return len(pending)
 
     def start_job(self, jobid):
         job: models.Job = self.job_map[jobid]

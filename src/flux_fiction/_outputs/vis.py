@@ -43,6 +43,7 @@ def summarize_and_plot_resources(
     *,
     config_json: str | None = None,
     config_exclusive: bool = False,
+    make_plots: bool = True,
 ) -> dict[str, Any]:
     os.makedirs(output_dir or ".", exist_ok=True)
 
@@ -64,7 +65,9 @@ def summarize_and_plot_resources(
     segments = build_usage_segments(rows, capacities)
     write_allocation_csv(allocation_csv, rows, capacities)
     write_usage_csv(usage_csv, segments, capacities)
-    written_plot_path = plot_usage(segments, capacities, plot_path)
+    # The CSVs above carry everything the plot shows, so skipping the render
+    # loses no data -- resource_usage_timeseries.csv can be replotted later.
+    written_plot_path = plot_usage(segments, capacities, plot_path) if make_plots else None
 
     summary = resource_summary(rows, capacities)
     summary["plot_written"] = bool(written_plot_path)

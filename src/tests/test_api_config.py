@@ -95,6 +95,7 @@ def test_load_toml_and_from_toml_support_top_level_and_overrides(tmp_path: Path)
                 "backend = \"mock\"",
                 "output_dir = \"./output\"",
                 "jobtap_logging = false",
+                "submit_novalidate = true",
                 "quiescent_accumulation_window = 0.25",
             ]
         )
@@ -113,6 +114,7 @@ def test_load_toml_and_from_toml_support_top_level_and_overrides(tmp_path: Path)
         quiescent_accumulation_window=None,
         account_system_latency=False,
         jobtap_logging=True,
+        submit_novalidate=False,
         otel_enabled=None,
         otel_endpoint=None,
         otel_service_name=None,
@@ -127,6 +129,7 @@ def test_load_toml_and_from_toml_support_top_level_and_overrides(tmp_path: Path)
     assert cfg.config_file == str(config_path)
     assert cfg.job_traces == str(trace_path)
     assert cfg.jobtap_logging is True
+    assert cfg.submit_novalidate is False
     assert cfg.account_system_latency is False
     assert cfg.faketime_timestamp_file == "/tmp/stamp"
     assert cfg.quiescent_accumulation_window == 0.25
@@ -171,6 +174,7 @@ def test_from_cli_args_uses_direct_values_without_toml():
         batch_job_starts=True,
         account_system_latency=True,
         jobtap_logging=False,
+        submit_novalidate=True,
         rabbit_storage_emit_dw=False,
         rabbit_storage_name="rabbit",
         output_dir="/tmp/out",
@@ -191,6 +195,7 @@ def test_from_cli_args_uses_direct_values_without_toml():
 
     cfg = api_config.from_cli_args(args)
     assert cfg.backend == "mock"
+    assert cfg.submit_novalidate is True
     assert cfg.output_dir == "/tmp/out/"
 
 

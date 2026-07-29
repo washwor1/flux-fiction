@@ -257,6 +257,61 @@ class Job(object):
         self._jobspec = self.raw_jobspec_override
 
 
+    def _submit_failure_details(self):
+        return (
+            "trace_idx={trace_idx} nnodes={nnodes} ncpus={ncpus} "
+            "ngpus={ngpus} rabbit_storage_gib={rabbit_gib:.3f} "
+            "rabbit_shares={rabbit_shares} rabbit_request_count={rabbit_request_count}"
+        ).format(
+            trace_idx=self.trace_index,
+            nnodes=self.nnodes,
+            ncpus=self.ncpus,
+            ngpus=self.ngpus,
+            rabbit_gib=self.rabbit_storage_gib,
+            rabbit_shares=self.rabbit_storage_share_count,
+            rabbit_request_count=self.rabbit_storage_request_count,
+        )
+
+    def submit_async(self, adapter: Adapter):
+        """Start the submission without waiting for the job id.
+
+        The id is not available until resolve_submit() is called, so nothing
+        may reference self.jobid in between.
+        """
+        jobspec_json = json.dumps(self.jobspec)
+        logger.log(9, jobspec_json)
+        self.real_submit = time.time()
+        self._submit_jobspec_json = jobspec_json
+        try:
+            self._submit_future = adapter.submit_job_async(jobspec_json)
+        except Exception as e:
+            self._submit_future = None
+            raise RuntimeError(
+                "Job submit (async start) failed for {}: {}\nJobspec JSON:\n{}"
+                .format(self._submit_failure_details(), e, jobspec_json)
+            ) from e
+
+    def resolve_submit(self, adapter: Adapter):
+        """Block until this job's asynchronous submission returns its id."""
+        future = getattr(self, "_submit_future", None)
+        if future is None:
+            return self._jobid
+        try:
+            self._jobid = adapter.submit_get_id(future)
+        except Exception as e:
+            raise RuntimeError(
+                "Job submit (async resolve) failed for {}: {}\nJobspec JSON:\n{}"
+                .format(
+                    self._submit_failure_details(), e,
+                    getattr(self, "_submit_jobspec_json", ""),
+                )
+            ) from e
+        finally:
+            self._submit_future = None
+            self._submit_jobspec_json = None
+        logger.debug("Submitted job id %s (async)", self._jobid)
+        return self._jobid
+
     def submit(self, adapter: Adapter):
         jobspec_json = json.dumps(self.jobspec)
         logger.log(9, jobspec_json)

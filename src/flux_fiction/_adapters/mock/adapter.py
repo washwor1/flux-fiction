@@ -156,6 +156,19 @@ class MockAdapter:
     def get_kvs_stats(self) -> dict:
         return {"dbfile_size": 0, "object_count": 0}
 
+    def supports_async_submit(self) -> bool:
+        return True
+
+    def submit_job_async(self, jobspec):
+        # No real round-trip to pipeline: submit now and box the id so the
+        # engine's asynchronous path is exercised end to end under test.
+        return ("mock-submit", self.submit_job(jobspec))
+
+    def submit_get_id(self, handle) -> int:
+        tag, jobid = handle
+        assert tag == "mock-submit"
+        return jobid
+
     def submit_job(self, jobspec) -> int:
         """
         Accepts Flux jobspec-like input (dict or JSON string) and queues the job.

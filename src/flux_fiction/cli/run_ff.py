@@ -366,6 +366,7 @@ def prepare_config(
     source_config: Path,
     run_root: Path,
     *,
+    config_overrides: dict[str, object] | None = None,
     otel: dict[str, str | bool] | None = None,
 ) -> tuple[Path, Path, Path]:
     cfg_doc = load_toml(source_config)
@@ -396,6 +397,8 @@ def prepare_config(
     cfg["status_file"] = str(run_root / "status.json")
     cfg["summary_file"] = str(run_root / "summary.json")
     cfg["source_config_file"] = str(source_config)
+    if config_overrides:
+        cfg.update(config_overrides)
     if otel:
         cfg.update(otel)
 
@@ -619,6 +622,15 @@ def main() -> int:
         help="Prepare the run directory and print the command without launching Flux.",
     )
     parser.add_argument(
+        "--submit-novalidate",
+        action="store_true",
+        default=None,
+        help=(
+            "Submit generated jobspecs with Flux's novalidate flag, skipping "
+            "job-ingest feasibility validation."
+        ),
+    )
+    parser.add_argument(
         "--broker-log-level",
         type=int,
         default=6,
@@ -697,9 +709,13 @@ def main() -> int:
             "otel_spans_file": str(otel_spans),
             "otel_bridge_log_file": str(otel_log),
         }
+    config_overrides = {}
+    if args.submit_novalidate is not None:
+        config_overrides["submit_novalidate"] = args.submit_novalidate
     generated_config, trace_path, output_dir = prepare_config(
         source_config,
         run_root,
+        config_overrides=config_overrides,
         otel=otel_cfg,
     )
 
