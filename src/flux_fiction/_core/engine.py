@@ -37,6 +37,10 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
+# How often (in time-steps) to stat the early-finalize sentinel. Cheap next to
+# the status.json write that already happens every step, but throttled anyway.
+EARLY_FINALIZE_CHECK_EVERY = 10
+
 # tracer = get_tracer()
 
 @dataclass(frozen=True)
@@ -447,6 +451,9 @@ class Simulation(object):
         self.stale_quiescence_replies = 0
         self.num_started = 0
         self.jobs_total = 0
+        self.early_finalize_requested = False
+        self.early_finalize_reason = ""
+        self._finalize_check_counter = 0
         self.status_writer = status or RunStatusWriter(None)
         self.status_context = {
             "run_dir": str(Path(output_dir).resolve().parent) if output_dir else None,
@@ -1125,10 +1132,58 @@ class Simulation(object):
                 jobid, state)
 
     
+    def finalize_sentinel_path(self):
+        """Sentinel the (unfaked) parent process touches when time is short."""
+        if not self.output_dir:
+            return None
+        return Path(self.output_dir) / ".finalize_now"
+
+    def _early_finalize_requested(self):
+        """Has the parent asked us to wrap up before the allocation expires?
+
+        The check is a file stat rather than a clock read because this process
+        runs under libfaketime -- its own clocks report simulated time and
+        cannot see the real wall approaching. The parent watcher is not
+        preloaded, so it owns the real deadline and signals through the
+        filesystem.
+        """
+        if self.early_finalize_requested:
+            return True
+        self._finalize_check_counter += 1
+        if self._finalize_check_counter % EARLY_FINALIZE_CHECK_EVERY:
+            return False
+        sentinel = self.finalize_sentinel_path()
+        if sentinel is not None and sentinel.exists():
+            try:
+                reason = sentinel.read_text(encoding="utf-8").strip()
+            except OSError:
+                reason = ""
+            self.early_finalize_requested = True
+            self.early_finalize_reason = reason or "walltime budget nearly exhausted"
+            return True
+        return False
+
     def advance(self, *args, **kwargs):
         if self.failed_reason:
             return
         while not self.failed_reason:
+            # Wrap up early rather than being SIGKILLed at the wall with an
+            # empty output directory: run the same post-sim analysis the normal
+            # path runs, so a truncated run still yields complete artifacts for
+            # however many jobs it got through.
+            if self._early_finalize_requested():
+                logger.warning(
+                    "Early finalize requested (%s); stopping at time_step=%d with "
+                    "%d/%d jobs complete and writing partial results",
+                    self.early_finalize_reason,
+                    self.time_step,
+                    self.num_complete,
+                    self.jobs_total,
+                )
+                self.write_status_snapshot(state="running")
+                self.post_verification()
+                self.adapter.stop_reactor()
+                return
             events_at_time = []
 
             try:

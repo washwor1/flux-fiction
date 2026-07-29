@@ -87,6 +87,12 @@ class Job(object):
         self.real_submit = None     # time.time() at actual submit()
         self.real_start  = None     # time.time() when sim_exec.start processed
         self.real_finish = None     # time.time() when complete_job() runs
+        # Only assigned when the job STARTS. It must still exist on a job that
+        # never started: an early finalize (walltime budget) ends the run with
+        # hundreds of jobs still queued, and the summary walks every job in the
+        # map. Leaving it unset made that walk raise AttributeError and killed
+        # the run before summary.json was written.
+        self.queue_wait = None
         self.flux_observed_start = None  # faketime visible to Flux at start callback
         self.jobspec_intermediate_types = []
         self.jobspec_intermediate_counts = {}

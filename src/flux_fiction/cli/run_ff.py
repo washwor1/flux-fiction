@@ -141,6 +141,9 @@ def broker_log_matches(log_path: Path, needle: str) -> list[str]:
 
 
 SCHED_RESOURCE_ERROR_NEEDLE = "sched-fluxion-resource.err"
+# Real seconds held back from the walltime budget so the simulation can run
+# post-sim analysis and write its outputs before the allocation is killed.
+DEFAULT_FINALIZE_RESERVE_SECONDS = 120.0
 
 
 def _terminate_process_group(proc: subprocess.Popen[str], sig: int) -> None:
@@ -150,6 +153,65 @@ def _terminate_process_group(proc: subprocess.Popen[str], sig: int) -> None:
         os.killpg(proc.pid, sig)
     except ProcessLookupError:
         return
+
+
+def _walltime_budget_seconds(explicit: float | None = None) -> float | None:
+    """Seconds of real time this run may use before it must wrap up."""
+    if explicit and explicit > 0:
+        return float(explicit)
+    raw = os.environ.get("FLUX_FICTION_WALLTIME_BUDGET_SECONDS", "").strip()
+    if not raw:
+        return None
+    try:
+        value = float(raw)
+    except ValueError:
+        return None
+    return value if value > 0 else None
+
+
+def _watch_walltime_budget(
+    proc: subprocess.Popen[str],
+    output_dir: Path,
+    budget_seconds: float,
+    reserve_seconds: float,
+) -> None:
+    """Ask the simulation to finalize before the allocation expires.
+
+    This runs in the parent, which is deliberately NOT libfaketime-preloaded --
+    only the child Flux instance is. The simulation therefore cannot see real
+    time at all, so the real deadline has to be owned out here and signalled
+    through a sentinel file the engine stats.
+
+    ``reserve_seconds`` is the time left for post-sim analysis (dumping the
+    event log, transitions, allocations and summary). Too small and the wall
+    arrives mid-write; the outputs are the whole point of finishing early.
+    """
+    trigger_at = time.time() + max(0.0, budget_seconds - reserve_seconds)
+    sentinel = output_dir / ".finalize_now"
+    while proc.poll() is None:
+        remaining = trigger_at - time.time()
+        if remaining <= 0:
+            try:
+                output_dir.mkdir(parents=True, exist_ok=True)
+                sentinel.write_text(
+                    "walltime budget exhausted: {:.0f}s budget, {:.0f}s reserved "
+                    "for finalization\n".format(budget_seconds, reserve_seconds),
+                    encoding="utf-8",
+                )
+                print(
+                    f"Walltime budget nearly exhausted; asked the simulation to "
+                    f"finalize early via {sentinel}",
+                    file=sys.stderr,
+                    flush=True,
+                )
+            except OSError as exc:
+                print(
+                    f"Failed to write early-finalize sentinel {sentinel}: {exc}",
+                    file=sys.stderr,
+                    flush=True,
+                )
+            return
+        time.sleep(min(5.0, max(0.5, remaining)))
 
 
 def _watch_broker_log_for_fatal_error(
@@ -612,6 +674,26 @@ def main() -> int:
         ),
     )
     parser.add_argument(
+        "--walltime-budget-seconds",
+        type=float,
+        default=None,
+        help=(
+            "Real seconds this run may use. When nearly exhausted the simulation "
+            "finalizes early and writes partial results instead of being killed "
+            "with an empty output directory. Also settable via "
+            "FLUX_FICTION_WALLTIME_BUDGET_SECONDS."
+        ),
+    )
+    parser.add_argument(
+        "--finalize-reserve-seconds",
+        type=float,
+        default=None,
+        help=(
+            "Seconds held back from the walltime budget for post-sim analysis "
+            f"(default {DEFAULT_FINALIZE_RESERVE_SECONDS:.0f})."
+        ),
+    )
+    parser.add_argument(
         "--no-faketime",
         action="store_true",
         help="Run without LD_PRELOAD/libfaketime.",
@@ -762,6 +844,10 @@ def main() -> int:
             "LD_PRELOAD": str(faketime_lib),
             "FAKETIME_TIMESTAMP_FILE": str(stamp_path),
             "FAKETIME_NO_CACHE": "1",
+            # Flux's broker/reactor uses monotonic timers for internal
+            # progress. Faking CLOCK_MONOTONIC while the simulation jumps wall
+            # time forward causes libev to spin under large timestamp updates.
+            "FAKETIME_DONT_FAKE_MONOTONIC": "1",
         }
         env.update(faketime_env)
 
@@ -797,6 +883,7 @@ def main() -> int:
             "unset LD_PRELOAD",
             "unset FAKETIME_TIMESTAMP_FILE",
             "unset FAKETIME_NO_CACHE",
+            "unset FAKETIME_DONT_FAKE_MONOTONIC",
             " ".join(shell_quote(part) for part in bridge_cmd) + " &",
             "bridge_pid=$!",
             "trap 'kill ${bridge_pid} 2>/dev/null || true; wait ${bridge_pid} 2>/dev/null || true' EXIT",
@@ -920,6 +1007,25 @@ def main() -> int:
                         daemon=True,
                     )
                     broker_watch.start()
+                budget = _walltime_budget_seconds(
+                    getattr(args, "walltime_budget_seconds", None)
+                )
+                if budget:
+                    reserve = float(
+                        getattr(args, "finalize_reserve_seconds", None)
+                        or os.environ.get("FLUX_FICTION_FINALIZE_RESERVE_SECONDS", 0)
+                        or DEFAULT_FINALIZE_RESERVE_SECONDS
+                    )
+                    print(
+                        f"Walltime budget: {budget:.0f}s "
+                        f"(reserving {reserve:.0f}s to write partial results)",
+                        flush=True,
+                    )
+                    threading.Thread(
+                        target=_watch_walltime_budget,
+                        args=(proc, run_root / "output", budget, reserve),
+                        daemon=True,
+                    ).start()
                 assert proc.stdout is not None
                 for line in proc.stdout:
                     if interrupted_reason is not None:
