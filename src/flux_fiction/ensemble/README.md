@@ -463,6 +463,7 @@ python3 -m flux_fiction_ensemble merge --hosts hosts.toml                       
 | `FLUX_FICTION_NO_BROKER_LOG_FILE` | suppress `broker.log` |
 | `FLUX_FICTION_SCRATCH_HOST_ROOT` | override the node-local scratch root |
 | `FLUX_FICTION_FAKETIME_DIR` | libfaketime stamp dir (default `/dev/shm`) |
+| `FLUX_FICTION_FAKETIME_MODE` | `legacy` timestamp file or opt-in `shared` clock |
 | `FLUX_FICTION_TERMINAL_RELEASE_GRACE_SECONDS` | retry delay for releasing finished allocations (120) |
 | `FLUX_FICTION_WORKSPACE_ROOT`, `_CONTAINER_IMAGE`, `_CONTAINER_IMAGE_TAR`, `_CONTAINER_INSTALLS`, `_CONTAINER_PYTHONPATH` | container plumbing, forwarded to workers |
 | `FLUX_FICTION_JOBTAP_SO` | override the compiled jobtap plugin |
@@ -490,10 +491,13 @@ compute nodes `/var/tmp` is `tmpfs`, i.e. RAM** — leaving the KVS there charge
 GBs against node memory. The container's own overlay is also RAM-backed *and*
 routed through fuse-overlayfs, so it is the worst of the options.
 
-The faketime stamp file lives on `/dev/shm` deliberately: with
-`FAKETIME_NO_CACHE=1`, libfaketime does a full open/read/close **per clock call**
-(~0.02 µs vDSO vs ~20 µs tmpfs vs ~311 µs NFS), and under podman `/tmp` is
-fuse-overlayfs.
+Legacy faketime stamp files live on `/dev/shm` deliberately: with
+`FAKETIME_NO_CACHE=1`, stock libfaketime does a full open/read/close **per clock
+call** (~0.02 µs vDSO vs ~20 µs tmpfs vs ~311 µs NFS), and under podman `/tmp`
+is fuse-overlayfs. The optimized libfaketime fork can instead be selected with
+`FLUX_FICTION_FAKETIME_MODE=shared`; it maps one versioned POSIX shared-memory
+page during process initialization and performs no file operation in realtime
+reads. Keep `legacy` available for system libfaketime installations.
 
 Sizing checklist before a large campaign:
 
