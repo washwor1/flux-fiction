@@ -155,6 +155,22 @@ class FluxAdapter:
             
     def get_kvs_stats(self) -> dict:
         return stats.get_kvs_stats(self._handle)
+
+    def get_flux_module_stats(self, module_name: str) -> dict:
+        return stats.get_module_stats(self._handle, module_name)
+
+    def get_scheduler_metrics(self) -> dict:
+        metrics = {}
+        for key, method in (
+            ("qmanager_stats", "sched-fluxion-qmanager.stats-get"),
+            ("qmanager_params", "sched-fluxion-qmanager.params"),
+            ("resource_match_stats", "sched-fluxion-resource.stats-get"),
+        ):
+            try:
+                metrics[key] = _make_serializable(self._handle.rpc(method).get())
+            except Exception as e:
+                metrics[f"{key}_error"] = repr(e)
+        return metrics
     
     def query_quiescent(self, json_string, return_cb):
         logger.debug("Querying quiescent")
@@ -215,15 +231,7 @@ class FluxAdapter:
         except Exception as e:
             diag["queue_status_error"] = repr(e)
 
-        for key, method in (
-            ("qmanager_stats", "sched-fluxion-qmanager.stats-get"),
-            ("qmanager_params", "sched-fluxion-qmanager.params"),
-            ("resource_match_stats", "sched-fluxion-resource.stats-get"),
-        ):
-            try:
-                diag[key] = _make_serializable(self._handle.rpc(method).get())
-            except Exception as e:
-                diag[f"{key}_error"] = repr(e)
+        diag.update(self.get_scheduler_metrics())
 
         return diag
 
