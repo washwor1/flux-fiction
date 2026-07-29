@@ -416,7 +416,7 @@ def configure_dftracer_env(env: dict[str, str], run_root: Path) -> dict[str, str
         "DFTRACER_ENABLE": "1",
         "DFTRACER_LOG_FILE": str(trace_prefix),
     }
-    for name in ("DFTRACER_DATA_DIR", "DFTRACER_TIME_METRIC"):
+    for name in ("DFTRACER_DATA_DIR", "DFTRACER_TIME_METRIC", "DFTRACER_INC_METADATA"):
         if name in env:
             dftracer_env[name] = env[name]
 

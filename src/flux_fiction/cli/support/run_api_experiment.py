@@ -21,6 +21,12 @@ logger = logging.getLogger(__name__)
 # rather than clobbering it (setdefault).
 os.environ.setdefault("DFTRACER_TIME_METRIC", "NS")
 
+# Per-event int/string/float args (our job_id, mhost, trace_idx tags) are only
+# written to the trace when DFTRACER_INC_METADATA=1; without it dftracer emits
+# the event but silently drops the args object. Must be set BEFORE
+# initialize_log() so the C core enables metadata capture at init time.
+os.environ.setdefault("DFTRACER_INC_METADATA", "1")
+
 # dftracer FUNCTION-mode requires an explicit process-level initialize_log()
 # call before any dftracer.get_instance().log_event(...) call will actually
 # write anything (get_instance().logger stays None, and log_event silently

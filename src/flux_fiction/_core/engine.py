@@ -1057,10 +1057,14 @@ class Simulation(object):
                     # process emulates every node, so mhost is the only field
                     # that actually distinguishes nodes in the trace).
                     nodes = []
+                    _src = None
                     try:
                         nodes, _src = self.adapter.nodelist_lookup(jobid)
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.warning("dftrace job_start nodelist_lookup failed jobid=%s: %r", jobid, e)
+                        nodes = []
+                    if not nodes:
+                        logger.debug("dftrace job_start empty nodelist jobid=%s src=%s", jobid, _src)
                     job.allocated_nodes = nodes
                     node_ids = [str(n) for n in sorted(nodes)] if nodes else [""]
                     trace_idx = getattr(job, "trace_index", None)
