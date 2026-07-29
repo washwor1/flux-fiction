@@ -33,6 +33,42 @@ from flux_fiction.ensemble.config import (
 )
 
 
+def launcher_config_path() -> Path:
+    """The per-user launcher config shared by the util/ campaign scripts."""
+    explicit = os.environ.get("FF_LAUNCHER_CONFIG")
+    if explicit:
+        return Path(explicit).expanduser()
+    base = os.environ.get("XDG_CONFIG_HOME") or str(Path.home() / ".config")
+    return Path(base) / "flux-fiction" / "launcher.env"
+
+
+def launcher_setting(name: str, default: str | None = None) -> str | None:
+    """Resolve a launcher setting: environment first, then the config file.
+
+    The config file holds shell-style ``KEY=value`` lines (an optional
+    ``export`` prefix and surrounding quotes are accepted, ``$VAR`` is
+    expanded) so the shell scripts can source the same file.
+    """
+    value = os.environ.get(name)
+    if value:
+        return value
+    path = launcher_config_path()
+    if path.is_file():
+        for line in path.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            if line.startswith("export "):
+                line = line[len("export "):].lstrip()
+            key, _, raw = line.partition("=")
+            if key.strip() == name:
+                raw = raw.strip()
+                if len(raw) >= 2 and raw[0] == raw[-1] and raw[0] in "\"'":
+                    raw = raw[1:-1]
+                return os.path.expandvars(raw) or default
+    return default
+
+
 def _load_toml(path: Path) -> dict[str, Any]:
     try:
         import tomllib
