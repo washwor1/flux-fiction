@@ -78,7 +78,19 @@ class _Topology:
         return sum(len(d) for d in self.domains)
 
 
-def _read_topology(sys_node: str = _SYS_NODE, sys_cpu: str = _SYS_CPU) -> Optional["_Topology"]:
+def _current_affinity() -> Optional[set[int]]:
+    try:
+        return set(os.sched_getaffinity(0))
+    except (AttributeError, OSError):
+        return None
+
+
+def _read_topology(
+    sys_node: str = _SYS_NODE,
+    sys_cpu: str = _SYS_CPU,
+    *,
+    allowed_cpus: Optional[set[int]] = None,
+) -> Optional["_Topology"]:
     """
     Read NUMA/SMT topology from sysfs. Returns ``None`` when unavailable.
 
@@ -96,11 +108,18 @@ def _read_topology(sys_node: str = _SYS_NODE, sys_cpu: str = _SYS_CPU) -> Option
     if not node_dirs:
         return None
 
+    if allowed_cpus is None:
+        allowed_cpus = _current_affinity()
+
     domains: list[list[tuple[int, ...]]] = []
     for nd in node_dirs:
         try:
             cpus = _parse_cpu_list((nd / "cpulist").read_text())
         except OSError:
+            continue
+        if allowed_cpus is not None:
+            cpus = [cpu for cpu in cpus if cpu in allowed_cpus]
+        if not cpus:
             continue
         cpu_set = set(cpus)
         seen: set[int] = set()
@@ -133,6 +152,9 @@ def _total_physical_cores() -> Optional[int]:
     topology = _read_topology()
     if topology is not None:
         return topology.total_physical_cores()
+    affinity = _current_affinity()
+    if affinity:
+        return len(affinity)
     return os.cpu_count()
 
 
