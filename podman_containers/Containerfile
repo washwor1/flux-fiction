@@ -77,7 +77,7 @@ RUN echo 'APT::Sandbox::User root;' > /etc/apt/apt.conf.d/00-apt-sandbox && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 
-RUN python3 -m pip install --break-system-packages \
+RUN python3 -m pip install --break-system-packages --ignore-installed \
         build \
         meson-python \
         opentelemetry-api \
