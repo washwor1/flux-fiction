@@ -1,0 +1,11 @@
+# Base Flux Fiction configuration for the example campaign. The ensemble
+# overwrites job_traces and config_json for every task, so the trace named
+# here is only a placeholder.
+[flux_fiction]
+job_traces = "trace.csv"
+nnodes = 30
+ncpus = 16
+ngpus = 0
+backend = "flux"
+quiet = true
+log_level = 40

@@ -1,0 +1,42 @@
+# Example ensemble campaign.
+#
+# Replays the bundled 11-job backfill trace on a synthesized 30-node, 16-core
+# cluster. Each of 4 shaken copies of the trace runs under every queue/match
+# policy pair: 2 x 2 x 4 = 16 tasks. Paths are relative to this file.
+#
+#   flux-fiction-ensemble plan campaign.toml
+#   flux-fiction-ensemble run campaign.toml
+version = 1
+
+[campaign]
+name = "example-backfill"
+output_root = "runs"
+batch_size = 4
+poll_interval_seconds = 30
+walltime_minutes = 30
+keep_generated_traces = true
+
+[input]
+trace = "inputs/trace.csv"
+format = "sacct"
+cpus_per_node = 16
+
+[shake]
+duplicates = 4
+seed = 1
+attributes = ["interarrival", "runtime"]
+job_percentage = 50
+degree_seconds = 60
+
+[grid]
+queue_policies = ["fcfs", "easy"]
+match_policies = ["firstnodex", "lonodex"]
+
+[flux]
+base_config = "inputs/config.toml"
+
+[submission]
+# Queue (Flux) or partition (Slurm) names on your system, tried in order.
+queues = ["debug"]
+job_name_prefix = "ffe-example"
+backend = "flux"
