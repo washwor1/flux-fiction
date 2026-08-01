@@ -126,7 +126,11 @@ class FluxAdapter:
     
     def reload_scheduler(self, cfg):
         ''''''
-        modules.reload_modules(self._handle, cfg.config_json)
+        modules.reload_modules(
+            self._handle,
+            cfg.config_json,
+            fluxion_variant=getattr(cfg, "fluxion_variant", None),
+        )
 
         modules.load_missing_modules(self._handle)
     

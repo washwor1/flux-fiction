@@ -167,6 +167,13 @@ class ExperimentConfig:
     # child in the generated jobspec.  This is useful for isolating how a
     # scheduler handles node-only requests from CPU-constrained requests.
     omit_core_resources: bool = False
+    # Name of a staged Fluxion build to load, resolved against
+    # FLUX_FICTION_FLUXION_STAGE_ROOT at module-reload time. Set per task by the
+    # ensemble launcher so one campaign can run a DIFFERENT Fluxion build per
+    # queue policy. Takes precedence over the FLUX_FICTION_FLUXION_*_MODULE
+    # environment variables, which are campaign-wide and therefore less
+    # specific. None leaves module selection exactly as it was.
+    fluxion_variant: Optional[str] = None
     # Pipeline job submissions: start every submission for a timestep before
     # collecting any job id, instead of one blocking round-trip per job. Every
     # id is collected before the scheduler is told what to expect, so the
@@ -233,6 +240,13 @@ class ExperimentConfigModel(BaseModel):
     rabbit_storage_emit_dw: bool = False
     rabbit_storage_name: str = "rabbit"
     omit_core_resources: bool = False
+    # Name of a staged Fluxion build to load, resolved against
+    # FLUX_FICTION_FLUXION_STAGE_ROOT at module-reload time. Set per task by the
+    # ensemble launcher so one campaign can run a DIFFERENT Fluxion build per
+    # queue policy. Takes precedence over the FLUX_FICTION_FLUXION_*_MODULE
+    # environment variables, which are campaign-wide and therefore less
+    # specific. None leaves module selection exactly as it was.
+    fluxion_variant: Optional[str] = None
     # Pipeline job submissions: start every submission for a timestep before
     # collecting any job id, instead of one blocking round-trip per job. Every
     # id is collected before the scheduler is told what to expect, so the

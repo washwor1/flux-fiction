@@ -116,6 +116,44 @@ def _env_path(name):
     return value or None
 
 
+def _variant_module_paths(fluxion_variant):
+    """
+    Resolve a named Fluxion build to its three module paths.
+
+    The ensemble launcher stages each named build onto node-local disk and
+    exports FLUX_FICTION_FLUXION_STAGE_ROOT; the run then carries only the
+    NAME, so the config does not depend on where staging put things. Returns
+    an empty dict when no variant is requested.
+
+    A requested variant that cannot be resolved is an error rather than a
+    silent fallback: falling back would run the wrong build and report it as
+    the right one, which is worse than not running at all.
+    """
+    if not fluxion_variant:
+        return {}
+    stage_root = _env_path("FLUX_FICTION_FLUXION_STAGE_ROOT")
+    if not stage_root:
+        raise RuntimeError(
+            f"config requests fluxion_variant '{fluxion_variant}' but "
+            "FLUX_FICTION_FLUXION_STAGE_ROOT is not set"
+        )
+    prefix = os.path.join(stage_root, fluxion_variant)
+    module_dir = os.path.join(prefix, "lib", "flux", "modules")
+    paths = {
+        "resource": os.path.join(module_dir, "sched-fluxion-resource.so"),
+        "feasibility": os.path.join(module_dir, "sched-fluxion-feasibility.so"),
+        "qmanager": os.path.join(module_dir, "sched-fluxion-qmanager.so"),
+    }
+    missing = [path for path in paths.values() if not os.path.isfile(path)]
+    if missing:
+        raise RuntimeError(
+            f"fluxion_variant '{fluxion_variant}' is incomplete under {prefix}: "
+            f"missing {', '.join(missing)}"
+        )
+    logger.info("Using staged fluxion variant '%s' from %s", fluxion_variant, prefix)
+    return paths
+
+
 
 def _load_config_object(config_source):
     """
@@ -177,7 +215,7 @@ def _reload_job_ingest_config(flux_handle, config_payload, job_ingest_loaded):
     flux_handle.rpc("job-ingest.config-reload", payload=config_payload).get()
 
 
-def reload_modules(flux_handle, config_source=None):
+def reload_modules(flux_handle, config_source=None, fluxion_variant=None):
     """
     Reload resource + scheduler modules in the order:
 
@@ -220,19 +258,27 @@ def reload_modules(flux_handle, config_source=None):
         elif "feasibility" in name:
             feasibility_module_path = module["path"]
 
+    # Per-run variant beats the campaign-wide environment: it is the more
+    # specific selector, and it is what lets one campaign run a different
+    # Fluxion build per queue policy.
+    variant_paths = _variant_module_paths(fluxion_variant)
+
     resource_module_path = (
         _env_path("FLUX_FICTION_RESOURCE_MODULE") or resource_module_path
     )
     fluxion_resource_path = (
-        _env_path("FLUX_FICTION_FLUXION_RESOURCE_MODULE")
+        variant_paths.get("resource")
+        or _env_path("FLUX_FICTION_FLUXION_RESOURCE_MODULE")
         or fluxion_resource_path
     )
     feasibility_module_path = (
-        _env_path("FLUX_FICTION_FLUXION_FEASIBILITY_MODULE")
+        variant_paths.get("feasibility")
+        or _env_path("FLUX_FICTION_FLUXION_FEASIBILITY_MODULE")
         or feasibility_module_path
     )
     fluxion_qmanager_path = (
-        _env_path("FLUX_FICTION_FLUXION_QMANAGER_MODULE")
+        variant_paths.get("qmanager")
+        or _env_path("FLUX_FICTION_FLUXION_QMANAGER_MODULE")
         or fluxion_qmanager_path
     )
 
