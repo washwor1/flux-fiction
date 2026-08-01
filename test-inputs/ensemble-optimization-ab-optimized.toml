@@ -1,0 +1,126 @@
+version = 1
+
+# Optimization A/B -- OPTIMIZED arm.
+#
+# Same rabbit saturation sweep as ensemble-rabbit-threshold-sweep.toml, reduced
+# per user direction (2026-07-30): no shaking, and the rabbit percentage axes
+# step by 25 instead of 10. That takes the grid from 12,060 tasks / 754 batches
+# to 198 tasks / 13 batches per arm.
+#
+# This arm carries all four changes under test: the shared-page libfaketime,
+# Release/-O3 Fluxion, the `skip expansion when next is empty` traverser fix,
+# and level-2 dftracer tracing. Its twin, ensemble-optimization-ab-baseline.toml,
+# is identical except for the `worker_env` block. Every other input -- trace,
+# slice, resource graph, flux config, grid, seeds, batch packing, walltime --
+# is byte-identical between the two, so a difference in results is attributable
+# to those four changes and nothing else.
+#
+# Note that dftracer is instrumentation, not an optimization: it is in this arm
+# because the user wants the traced configuration measured, so the throughput
+# number this arm produces is net of the tracing cost, not the ceiling.
+
+[campaign]
+name = "opt-ab-optimized"
+output_root = "/p/lustre5/ashworth12/ff-optimization-ab"
+batch_size = 16
+poll_interval_seconds = 120
+# 4 h cap, per user direction, matching the baseline arm exactly. If the
+# optimizations land as hoped some cells will finish the full 10k jobs and
+# yield real makespans; cells that do not are still comparable on
+# jobs-completed-in-budget or on makespan truncated to a common job count.
+walltime_minutes = 240
+keep_generated_traces = false
+no_faketime = false
+broker_log_level = 3
+no_broker_log_file = true
+# Measured 2026-07-26: post-sim analysis took 17-257 s per task at 16-way
+# packing, and teardown must then cancel the in-flight simulated jobs.
+finalize_reserve_seconds = 900
+# Pinning OFF, as in the sweep: an exclusive core block stops a fast replica
+# borrowing capacity its idle siblings leave free.
+flux_launch = false
+
+[campaign.worker_env]
+# The dftracer-capable image, for BOTH arms. It is the image the Fluxion
+# modules were built in, so it carries the matching toolchain and (for the
+# optimized arm) libdftracer_core; the stock flux-fiction-dev image has
+# neither. Held identical across arms so the container is not a variable.
+FLUX_FICTION_CONTAINER_IMAGE = "localhost/flux-fiction-dev-dft:latest"
+FLUX_FICTION_CONTAINER_IMAGE_TAR = "/usr/WS1/ashworth12/ff-podman/flux-fiction-dev-dft.tar"
+# Shared-page libfaketime. Measured ~1.9x over the legacy /dev/shm stamp file
+# on the dftracer annotation workload (2026-07-29).
+FAKETIME_LIB = "/usr/WS1/ashworth12/ff-podman/libfaketime-shared-clock/src/libfaketimeMT.so.1"
+FLUX_FICTION_FAKETIME_MODE = "shared"
+# REQUIRED with shared mode: the meson-python editable loader re-runs ninja on
+# import inside the broker, and shared mode does not shift stat() mtimes
+# consistently with the clock. Without this every run dies with
+# "manifest build.ninja still dirty after 100 tries".
+NO_FAKE_STAT = "1"
+# Release/-O3 Fluxion carrying `traverser: skip expansion when next is empty`,
+# with level-2 dftracer annotations, in a private copy of the container-installs
+# prefix. See the baseline spec for why the whole prefix is swapped rather than
+# individual module paths. flux-core inside it is copied verbatim from
+# container-installs and verified identical to the baseline arm's, so only
+# Fluxion differs.
+FLUX_FICTION_CONTAINER_INSTALLS = "/usr/WS1/ashworth12/ff-podman/ab-container-installs-optimized"
+# Held constant across both arms.
+FLUX_FICTION_JOBTAP_SO = "/usr/WS1/ashworth12/ff-podman/flux-fiction-shared-clock/build/cp312/src/emu-jobtap.so"
+# DFTracer. DFTRACER_LOG_FILE is deliberately unset: run_ff then roots the
+# trace at <run_root>/dftracer/flux-fiction, which keeps each of the 16
+# concurrent replicas in its own directory instead of interleaving them.
+DFTRACER_ENABLE = "1"
+DFTRACER_TIME_METRIC = "NS"
+DFTRACER_INC_METADATA = "1"
+DFTRACER_DISABLE_IO = "1"
+# flux-fiction unloads and reloads the Fluxion modules ~5 simulated seconds in,
+# and glibc runs a DSO's atexit handlers at dlclose. Pinning the finalize to
+# generation 0 stops the trace being closed and discarded at that first unload.
+DFTRACER_FLUXION_FINALIZE_GENERATION = "0"
+
+[input]
+trace = "/usr/WS1/ashworth12/ff-podman/tuo_queueB_10k_sat.csv"
+format = "tuolumne"
+slice_start = 0
+slice_count = 10000
+cpus_per_node = 96
+
+[shake]
+# No shaking, per user direction. `duplicates = 1` alone would still perturb
+# the trace -- it is `job_percentage = 0` that makes every shake function an
+# exact pass-through, so each cell runs the unmodified 10k-job slice. (An empty
+# `attributes` list would do the same but is rejected by the spec validator.)
+duplicates = 1
+attributes = ["interarrival"]
+job_percentage = 0
+seed = 91001
+
+[rabbit]
+ceiling_basis = "rabbit_node"
+field_name = "RabbitGiB"
+mean_fraction = 0.5
+sigma_fraction = 0.16666666666666666
+tail_alpha = 1.5
+tail_min_gib = 100.0
+
+[grid]
+queue_policies = ["easy", "hybrid", "conservative"]
+match_policies = ["firstnodex", "lonodex"]
+rabbit_job_percentages = [0, 25, 50, 75, 100]
+rabbit_ceiling_percentages = [0, 25, 50, 75, 100]
+rabbit_distributions = ["gaussian", "pareto"]
+
+[flux]
+base_config = "/usr/WS1/ashworth12/ff-podman/flux-fiction-accuracy-tests/configs/tuo_pbatch.toml"
+base_config_json = "/usr/WS1/ashworth12/ff-podman/flux-fiction-accuracy-tests/configs/tuo_pbatch_scheduler.json"
+resource_R = "/usr/WS1/ashworth12/ff-podman/resource_graphs/tuolumne.json"
+
+[flux.config_overrides]
+make_plots = false
+
+[submission]
+queues = ["pbatch"]
+job_name_prefix = "ffe-abo"
+backend = "flux"
+
+[submission.queue_limits.pbatch]
+# Deliberately empty: all 13 batches go in on the first tick.

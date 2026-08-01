@@ -471,6 +471,53 @@ spack_fluxion_prefix = "/opt/fluxion"
     assert "python3 -m flux_fiction_ensemble worker" in text
 
 
+def test_worker_script_forwards_campaign_env_into_container(tmp_path: Path):
+    trace, config, scheduler = _write_base_files(tmp_path)
+    spec = load_campaign_spec(
+        _write_spec(
+            tmp_path,
+            trace=trace,
+            config=config,
+            scheduler=scheduler,
+            campaign_extra=(
+                'worker_env = { FLUX_FICTION_FAKETIME_MODE = "shared", '
+                'FAKETIME_LIB = "/opt/libfaketimeMT.so.1", NO_FAKE_STAT = "1" }\n'
+            ),
+        )
+    )
+
+    assert spec.campaign.worker_env == {
+        "FLUX_FICTION_FAKETIME_MODE": "shared",
+        "FAKETIME_LIB": "/opt/libfaketimeMT.so.1",
+        "NO_FAKE_STAT": "1",
+    }
+
+    text = ensure_worker_script(tmp_path, spec).read_text(encoding="utf-8")
+
+    # Declared in the spec, overridable from the environment, and handed to
+    # podman explicitly -- a bare `podman run` inherits none of this.
+    assert 'FAKETIME_LIB="${FAKETIME_LIB:-/opt/libfaketimeMT.so.1}"' in text
+    assert "WORKER_ENV_NAMES+=(FLUX_FICTION_FAKETIME_MODE)" in text
+    assert 'CONTAINER_ENV_ARGS+=(-e "${name}=${!name}")' in text
+    assert '${CONTAINER_ENV_ARGS[@]+"${CONTAINER_ENV_ARGS[@]}"}' in text
+    # DFTracer's variables are a family, matched by prefix rather than listed.
+    assert "compgen -v | grep '^DFTRACER_'" in text
+
+
+def test_worker_env_rejects_names_that_are_not_shell_identifiers(tmp_path: Path):
+    trace, config, scheduler = _write_base_files(tmp_path)
+    with pytest.raises(EnsembleConfigError):
+        load_campaign_spec(
+            _write_spec(
+                tmp_path,
+                trace=trace,
+                config=config,
+                scheduler=scheduler,
+                campaign_extra='worker_env = { "OOPS; rm -rf /" = "1" }\n',
+            )
+        )
+
+
 def test_launcher_marks_terminal_flux_job_failed_without_resubmitting(tmp_path: Path, monkeypatch):
     trace, config, scheduler = _write_base_files(tmp_path)
     spec = load_campaign_spec(_write_spec(tmp_path, trace=trace, config=config, scheduler=scheduler))

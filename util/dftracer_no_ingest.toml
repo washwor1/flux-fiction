@@ -1,0 +1,11 @@
+# Deliberately bypass all job-ingest transformations and validation for the
+# DFTracer node-only jobspec experiment.  This is a test-only broker config:
+# the generated jobspecs are already complete enough for the experiment and
+# must reach the scheduler unchanged.
+[ingest.frobnicator]
+disable = true
+plugins = []
+
+[ingest.validator]
+disable = true
+plugins = []

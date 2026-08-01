@@ -216,7 +216,10 @@ def run(
             if raw_jobspec_override is not None:
                 job.set_jobspec_override(raw_jobspec_override)
             else:
-                job.set_jobspec_shape(jobspec_shape)
+                job.set_jobspec_shape(
+                    jobspec_shape,
+                    omit_core_resources=config.omit_core_resources,
+                )
                 job.set_rabbit_storage_shape(
                     rabbit_storage,
                     emit_dw=config.rabbit_storage_emit_dw,

@@ -108,6 +108,12 @@ class CampaignSettings:
     meson_pythonpath: str | None = None
     host_jobtap_cc: str | None = None
     host_tmpdir: str | None = None
+    # Extra environment handed to every simulation in the campaign, e.g. which
+    # libfaketime to preload, which Fluxion modules to load, whether DFTracer
+    # is enabled. Baked into the generated worker.sh (and forwarded into the
+    # container) so an arm's configuration lives in its spec rather than in
+    # whatever shell happened to launch it.
+    worker_env: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -441,6 +447,22 @@ def load_campaign_spec(path: str | os.PathLike[str]) -> CampaignSpec:
                 return str(value)
         return None
 
+    raw_worker_env = raw.get("worker_env", campaign_data.get("worker_env")) or {}
+    if not isinstance(raw_worker_env, dict):
+        raise EnsembleConfigError("worker_env must be a table of NAME = \"value\" pairs")
+    worker_env: dict[str, str] = {}
+    for key, value in raw_worker_env.items():
+        name_text = str(key).strip()
+        # These names are pasted into generated shell as `NAME="..."`, so a
+        # name that is not a plain shell identifier would be a shell injection
+        # rather than an environment variable.
+        if not name_text or not name_text.replace("_", "").isalnum() or name_text[0].isdigit():
+            raise EnsembleConfigError(f"worker_env key is not a valid variable name: {key!r}")
+        if isinstance(value, bool):
+            worker_env[name_text] = "1" if value else "0"
+        else:
+            worker_env[name_text] = str(value)
+
     # `attributes` is the list form; `attribute` remains as the older scalar.
     raw_attributes = shake_data.get("attributes", shake_data.get("attribute", "interarrival"))
     if isinstance(raw_attributes, str):
@@ -588,6 +610,7 @@ def load_campaign_spec(path: str | os.PathLike[str]) -> CampaignSpec:
             meson_pythonpath=_optional_text("meson_pythonpath"),
             host_jobtap_cc=_optional_text("host_jobtap_cc"),
             host_tmpdir=_optional_text("host_tmpdir"),
+            worker_env=worker_env,
         ),
         input=InputSettings(
             trace=trace_path,

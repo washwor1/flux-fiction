@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import gzip
 import json
 import os
 from pathlib import Path
@@ -199,6 +200,10 @@ def test_build_inner_script_and_write_reproducer(tmp_path: Path):
     assert "source ./load_jobtap.sh" in script
     assert "capture-sample-jobspec" in script
     assert "faketime_tolerance" in script
+    qmanager_remove = script.index("flux module remove sched-fluxion-qmanager")
+    feasibility_remove = script.index("flux module remove sched-fluxion-feasibility")
+    resource_remove = script.index("flux module remove sched-fluxion-resource")
+    assert qmanager_remove < feasibility_remove < resource_remove
 
     repro = tmp_path / "reproduce.sh"
     run_ff.write_reproducer(
@@ -219,3 +224,69 @@ def test_make_otel_socket_path_is_stable_and_unique(tmp_path: Path):
     assert first == second
     assert first != third
     assert first.name.startswith("flux-fiction-otel-")
+
+
+def test_merge_dftracer_traces_tags_each_source_and_skips_prior_merge(tmp_path: Path):
+    trace_dir = tmp_path / "dftracer"
+    trace_dir.mkdir()
+    fluxion = trace_dir / "fluxion-broker.pfw.gz"
+    fiction = trace_dir / "fluxion-controller.pfw.gz"
+
+    def write_pfw(path: Path, events: list[dict]):
+        with gzip.open(path, "wt", encoding="utf-8") as trace_file:
+            trace_file.write("[\n")
+            for event in events:
+                trace_file.write(json.dumps(event) + "\n")
+            trace_file.write("]")
+
+    write_pfw(
+        fluxion,
+        [{"name": "run_match", "cat": "CPP_APP", "pid": 7, "ph": "X", "args": {}}],
+    )
+    write_pfw(
+        fiction,
+        [
+            {
+                "name": "app",
+                "cat": "dftracer",
+                "pid": 8,
+                "ph": "M",
+                "args": {"name": "app", "value": "flux-fiction"},
+            }
+        ],
+    )
+    # A prior merge must never be included as a third input on a rerun.
+    write_pfw(trace_dir / "unified-trace.pfw.gz", [{"name": "stale"}])
+
+    merged, count = run_ff.merge_dftracer_traces(trace_dir / "flux-fiction")
+
+    assert merged == trace_dir / "unified-trace.pfw.gz"
+    assert count == 2
+    assert list(run_ff.read_dftracer_events(merged)) == [
+        {
+            "name": "run_match",
+            "cat": "CPP_APP",
+            "pid": 7,
+            "ph": "X",
+            "args": {"source": "fluxion", "source_file": fluxion.name},
+        },
+        {
+            "name": "app",
+            "cat": "dftracer",
+            "pid": 8,
+            "ph": "M",
+            "args": {
+                "name": "app",
+                "value": "flux-fiction",
+                "source": "flux-fiction",
+                "source_file": fiction.name,
+            },
+        },
+    ]
+
+
+def test_merge_dftracer_traces_without_inputs(tmp_path: Path):
+    merged, count = run_ff.merge_dftracer_traces(tmp_path / "dftracer" / "flux-fiction")
+
+    assert merged is None
+    assert count == 0

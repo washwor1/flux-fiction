@@ -139,3 +139,20 @@ def test_configure_dftracer_env_is_noop_when_disabled(tmp_path):
 
     assert run_ff.configure_dftracer_env(env, tmp_path / "run") == {}
     assert env["DFTRACER_LOG_FILE"] == "/tmp/trace"
+
+
+def test_configure_dftracer_env_scopes_parallel_child_by_unique_parent(tmp_path):
+    run_parent = tmp_path / "runs" / "0003_hybrid-no-cores"
+    run_parent.mkdir(parents=True)
+    (run_parent / "launch_config.toml").write_text("[flux_fiction]\n", encoding="utf-8")
+    run_root = run_parent / "child"
+    env = {
+        "DFTRACER_ENABLE": "1",
+        "DFTRACER_LOG_FILE": str(tmp_path / "dftracer" / "fluxion"),
+    }
+
+    configured = run_ff.configure_dftracer_env(env, run_root)
+
+    assert configured["DFTRACER_LOG_FILE"] == str(
+        tmp_path / "dftracer" / "0003_hybrid-no-cores" / "fluxion"
+    )

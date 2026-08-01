@@ -31,6 +31,17 @@ RUNNING_STATES = {
 }
 TERMINAL_STATES = {"succeeded", "failed"}
 DEFAULT_CONTAINER_IMAGE = "localhost/flux-fiction-dev:latest"
+
+# Settings a campaign may declare in `worker_env` that configure the worker's
+# container runtime rather than the simulation inside it. They are read when
+# worker.sh is generated and are deliberately not forwarded to the container.
+_CONTAINER_RUNTIME_SETTINGS = frozenset({
+    "FLUX_FICTION_WORKSPACE_ROOT",
+    "FLUX_FICTION_CONTAINER_INSTALLS",
+    "FLUX_FICTION_CONTAINER_IMAGE",
+    "FLUX_FICTION_CONTAINER_IMAGE_TAR",
+    "FLUX_FICTION_CONTAINER_PYTHONPATH",
+})
 DEFAULT_SPACK_FLUXION_PREFIX = (
     "/usr/WS1/ashworth12/package_managers/spack/opt/spack/linux-rhel8-x86_64/"
     "gcc-12.2.0/flux-sched-0.53.0-rben2bzg2txikxftd7w34mcio3u6mzdc"
@@ -1504,15 +1515,34 @@ def ensure_worker_script(root: Path, spec: CampaignSpec | None = None) -> Path:
     )
     default_host_jobtap_cc = getattr(campaign, "host_jobtap_cc", None) or "gcc"
     default_host_tmpdir = getattr(campaign, "host_tmpdir", None) or ""
-    workspace_root = Path(os.environ.get("FLUX_FICTION_WORKSPACE_ROOT", _default_workspace_root())).resolve()
+    worker_env = dict(getattr(campaign, "worker_env", None) or {})
+
+    def _runtime_setting(name: str, default: str | os.PathLike[str]) -> str:
+        """Resolve a container-runtime setting: environment, then spec, then default.
+
+        These are consumed by worker.sh itself rather than exported to the
+        simulation, so they are baked in as defaults here. Taking them from
+        `worker_env` lets a campaign that needs a particular image -- one with
+        dftracer, say -- say so in its spec instead of relying on whatever
+        shell launched it.
+        """
+        return os.environ.get(name) or worker_env.get(name) or str(default)
+
+    workspace_root = Path(
+        _runtime_setting("FLUX_FICTION_WORKSPACE_ROOT", _default_workspace_root())
+    ).resolve()
     container_installs = Path(
-        os.environ.get("FLUX_FICTION_CONTAINER_INSTALLS", workspace_root / "container-installs")
+        _runtime_setting(
+            "FLUX_FICTION_CONTAINER_INSTALLS", workspace_root / "container-installs"
+        )
     ).resolve()
     image_tar = Path(
-        os.environ.get("FLUX_FICTION_CONTAINER_IMAGE_TAR", workspace_root / "flux-fiction-dev.tar")
+        _runtime_setting(
+            "FLUX_FICTION_CONTAINER_IMAGE_TAR", workspace_root / "flux-fiction-dev.tar"
+        )
     ).resolve()
-    image = os.environ.get("FLUX_FICTION_CONTAINER_IMAGE", DEFAULT_CONTAINER_IMAGE)
-    container_pythonpath = os.environ.get("FLUX_FICTION_CONTAINER_PYTHONPATH", str(source_root))
+    image = _runtime_setting("FLUX_FICTION_CONTAINER_IMAGE", DEFAULT_CONTAINER_IMAGE)
+    container_pythonpath = _runtime_setting("FLUX_FICTION_CONTAINER_PYTHONPATH", source_root)
     script = "\n".join(
         [
             "#!/usr/bin/env bash",
@@ -1548,6 +1578,53 @@ def ensure_worker_script(root: Path, spec: CampaignSpec | None = None) -> Path:
             f"DEFAULT_HOST_TMPDIR={json.dumps(default_host_tmpdir)}",
             "WORKER_RUNTIME=\"${FLUX_FICTION_WORKER_RUNTIME:-${DEFAULT_WORKER_RUNTIME}}\"",
             "if [[ \"${WORKER_RUNTIME}\" == \"podman\" ]]; then WORKER_RUNTIME=container; fi",
+            "",
+            "# Campaign-declared run environment (spec table `worker_env`). The",
+            "# container runtime hands podman an explicit -e for each of these,",
+            "# because a bare `podman run` inherits nothing from this shell.",
+            "WORKER_ENV_NAMES=()",
+            *[
+                line
+                # The container-runtime settings above are consumed by this
+                # script, not by the simulation; they are already baked in as
+                # defaults and do not belong in the container's environment.
+                for name, value in sorted(worker_env.items())
+                if name not in _CONTAINER_RUNTIME_SETTINGS
+                for line in (
+                    f"{name}=\"${{{name}:-{value}}}\"",
+                    f"export {name}",
+                    f"WORKER_ENV_NAMES+=({name})",
+                )
+            ],
+            "# Names listed here are forwarded when set, whether they come from the",
+            "# spec, the submitting shell, or the batch job's environment.",
+            "for _name in FAKETIME_LIB FLUX_FICTION_JOBTAP_SO FLUX_FICTION_NO_BROKER_LOG_FILE \\",
+            "             FLUX_FICTION_FAKETIME_MODE FLUX_FICTION_FINALIZE_RESERVE_SECONDS \\",
+            "             FLUX_FICTION_FLUXION_RESOURCE_MODULE FLUX_FICTION_FLUXION_FEASIBILITY_MODULE \\",
+            "             FLUX_FICTION_FLUXION_QMANAGER_MODULE NO_FAKE_STAT FLUX_CONF_DIR \\",
+            "             ${FLUX_FICTION_WORKER_EXTRA_ENV:-}; do",
+            # `test && append` as the loop body would make a false test on the
+            # FINAL iteration the loop's exit status, which `set -e` treats as
+            # a fatal error. Use if/fi so the body always succeeds.
+            "  if [[ -n \"${!_name:-}\" ]]; then WORKER_ENV_NAMES+=(\"${_name}\"); fi",
+            "done",
+            "# DFTracer is configured through a whole family of variables; forward",
+            "# every one that is set rather than tracking them individually.",
+            "while IFS= read -r _name; do",
+            "  if [[ -n \"${_name}\" ]]; then WORKER_ENV_NAMES+=(\"${_name}\"); fi",
+            "done < <(compgen -v | grep '^DFTRACER_' || true)",
+            "",
+            "container_env_args() {",
+            "  local seen=\" \" name",
+            "  CONTAINER_ENV_ARGS=()",
+            "  for name in ${WORKER_ENV_NAMES[@]+\"${WORKER_ENV_NAMES[@]}\"}; do",
+            "    [[ \"${seen}\" == *\" ${name} \"* ]] && continue",
+            "    seen+=\"${name} \"",
+            "    [[ -n \"${!name:-}\" ]] || continue",
+            "    CONTAINER_ENV_ARGS+=(-e \"${name}=${!name}\")",
+            "  done",
+            "  return 0",
+            "}",
             "if [[ -z \"${FLUX_FICTION_FLUX_LAUNCH+x}\" && -n \"${DEFAULT_FLUX_LAUNCH}\" ]]; then",
             "  export FLUX_FICTION_FLUX_LAUNCH=\"${DEFAULT_FLUX_LAUNCH}\"",
             "fi",
@@ -1676,7 +1753,13 @@ def ensure_worker_script(root: Path, spec: CampaignSpec | None = None) -> Path:
             "}",
             "trap cleanup EXIT",
             "",
+            "container_env_args",
+            "if ((${#CONTAINER_ENV_ARGS[@]})); then",
+            "  echo \"Forwarding to container: ${CONTAINER_ENV_ARGS[*]}\"",
+            "fi",
+            "",
             "CONTAINER_ID=\"$(podman run -d --rm --name \"${CONTAINER_NAME}\" --pull=never \\",
+            "  ${CONTAINER_ENV_ARGS[@]+\"${CONTAINER_ENV_ARGS[@]}\"} \\",
             "  -e MPLBACKEND=Agg \\",
             "  -e PYTHONPATH=\"${CONTAINER_PYTHONPATH}\" \\",
             "  -e FLUX_FICTION_FAKETIME_DIR=/dev/shm \\",
@@ -2073,9 +2156,20 @@ def _submit_batch(root: Path, spec: CampaignSpec, batch_id: str, queue: str, *, 
         "HOST_JOBTAP_CC",
         "FAKETIME_LIB",
         "FLUX_FICTION_JOBTAP_SO",
+        "FLUX_FICTION_FAKETIME_MODE",
+        "FLUX_FICTION_FLUXION_RESOURCE_MODULE",
+        "FLUX_FICTION_FLUXION_FEASIBILITY_MODULE",
+        "FLUX_FICTION_FLUXION_QMANAGER_MODULE",
+        "FLUX_FICTION_WORKER_EXTRA_ENV",
+        "NO_FAKE_STAT",
+        "FLUX_CONF_DIR",
     ):
         if os.environ.get(name) and name not in env:
             env[name] = os.environ[name]
+    # DFTracer's configuration is a variable family, not a fixed list.
+    for name, value in os.environ.items():
+        if name.startswith("DFTRACER_") and value and name not in env:
+            env[name] = value
     if dry_run:
         job_name = _batch_name_for_state(spec, batch_id, read_json(state_path(root)) or {})
         if submission_backend(spec) == "slurm":

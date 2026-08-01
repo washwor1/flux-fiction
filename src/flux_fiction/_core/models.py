@@ -96,6 +96,7 @@ class Job(object):
         self.flux_observed_start = None  # faketime visible to Flux at start callback
         self.jobspec_intermediate_types = []
         self.jobspec_intermediate_counts = {}
+        self.jobspec_omit_core_resources = False
         self.rabbit_storage_resource_type = "ssd"
         self.rabbit_storage_parent_type = None
         self.rabbit_storage_nodes_per_parent = 0
@@ -136,8 +137,10 @@ class Job(object):
         for res_type in self.jobspec_intermediate_types:
             branch_factor *= int(self.jobspec_intermediate_counts.get(res_type, 1) or 1)
 
-        core = create_resource("core", max(1, math.ceil(total_cores / branch_factor)))
-        withs = [core]
+        withs = []
+        if not self.jobspec_omit_core_resources:
+            core = create_resource("core", max(1, math.ceil(total_cores / branch_factor)))
+            withs.append(core)
         if total_gpus:
             gpu = create_resource("gpu", max(1, math.ceil(total_gpus / branch_factor)))
             withs.append(gpu)
@@ -146,8 +149,19 @@ class Job(object):
             count = int(self.jobspec_intermediate_counts.get(res_type, 1) or 1)
             withs = [create_resource(res_type, count, withs)]
 
-        slot = create_slot("task", 1, withs)
-        node_section = create_resource("node", self.nnodes, [slot]) if self.nnodes > 0 else slot
+        # A no-core CPU-only request is intentionally node-only.  Do not leave
+        # an empty task slot behind: Flux core's resource summary and Fluxion
+        # treat that as a malformed slot request rather than a request with no
+        # CPU constraint.
+        if self.jobspec_omit_core_resources and not withs:
+            node_section = create_resource("node", self.nnodes)
+        else:
+            slot = create_slot("task", 1, withs)
+            node_section = (
+                create_resource("node", self.nnodes, [slot])
+                if self.nnodes > 0
+                else slot
+            )
         if self.exclusive and self.nnodes > 0:
             node_section["exclusive"] = True
 
@@ -206,7 +220,7 @@ class Job(object):
         return [create_slot("rabbit", bundle_count, [node_section, ssd_section])]
 
 
-    def set_jobspec_shape(self, shape):
+    def set_jobspec_shape(self, shape, *, omit_core_resources=False):
         shape = shape or {}
         self.jobspec_intermediate_types = [
             res_type for res_type in shape.get("intermediate_types", [])
@@ -217,6 +231,7 @@ class Job(object):
             for key, value in shape.get("intermediate_counts", {}).items()
             if value
         }
+        self.jobspec_omit_core_resources = bool(omit_core_resources)
         self._jobspec = None
 
 
