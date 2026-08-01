@@ -8,6 +8,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import shlex
 import shutil
 import subprocess
 import sys
@@ -195,9 +196,16 @@ def generate_tasks(spec: CampaignSpec) -> list[dict[str, Any]]:
     distributions = list(
         getattr(spec.grid, "rabbit_distributions", None) or [spec.rabbit.distribution]
     )
+    # Tag the variant into the task id only when the campaign actually uses more
+    # than one, so single-build campaigns keep the ids they have always had.
+    variants_in_play = {
+        spec.grid.variant_for(policy) for policy in spec.grid.queue_policies
+    } - {None}
+    tag_variant = len(variants_in_play) > 1
     for duplicate in range(spec.shake.duplicates):
         shake_seed = int(spec.shake.seed) + duplicate
         for queue_policy in spec.grid.queue_policies:
+            fluxion_variant = spec.grid.variant_for(queue_policy)
             for match_policy in spec.grid.match_policies:
                 # One zero-rabbit control per policy cell; the rest of the
                 # degenerate pairings would be exact duplicates of it. The
@@ -229,6 +237,8 @@ def generate_tasks(spec: CampaignSpec) -> list[dict[str, Any]]:
                             # task ids they have always had.
                             if len(distributions) > 1:
                                 parts.append(f"d{_slug(distribution)}")
+                            if tag_variant and fluxion_variant:
+                                parts.append(f"v{_slug(fluxion_variant)}")
                             tasks.append(
                                 {
                                     "task_id": "__".join(parts),
@@ -246,6 +256,7 @@ def generate_tasks(spec: CampaignSpec) -> list[dict[str, Any]]:
                                     ),
                                     "queue_policy": queue_policy,
                                     "match_policy": match_policy,
+                                    "fluxion_variant": fluxion_variant,
                                     "rabbit_job_percentage": rabbit_job_pct,
                                     "rabbit_ceiling_percentage": rabbit_ceiling_pct,
                                     "rabbit_distribution": distribution,
@@ -588,6 +599,13 @@ def materialize_task_inputs(
     cfg = _load_base_config(spec)
     cfg["job_traces"] = str(trace_path)
     cfg["config_json"] = str(scheduler_path)
+    # Per-task Fluxion build. Carried as a NAME, not a path: the worker stages
+    # each variant to node-local disk and exports the stage root, so the run
+    # resolves name -> prefix at load time. That keeps the config independent of
+    # where the worker happened to stage things, which differs between the
+    # container and host/Spack runtimes.
+    if task.get("fluxion_variant"):
+        cfg["fluxion_variant"] = str(task["fluxion_variant"])
     write_flux_fiction_toml(config_path, cfg)
 
     write_json(
@@ -638,6 +656,8 @@ def render_parallel_manifest(
             "rabbit_job_percentage": task["rabbit_job_percentage"],
             "rabbit_ceiling_percentage": task["rabbit_ceiling_percentage"],
         }
+        if task.get("fluxion_variant"):
+            metadata["fluxion_variant"] = task["fluxion_variant"]
         meta = ", ".join(f"{key} = {json.dumps(str(value))}" for key, value in metadata.items())
         lines.extend(
             [
@@ -1543,6 +1563,13 @@ def ensure_worker_script(root: Path, spec: CampaignSpec | None = None) -> Path:
     ).resolve()
     image = _runtime_setting("FLUX_FICTION_CONTAINER_IMAGE", DEFAULT_CONTAINER_IMAGE)
     container_pythonpath = _runtime_setting("FLUX_FICTION_CONTAINER_PYTHONPATH", source_root)
+    fluxion_variants = dict(getattr(getattr(spec, "grid", None), "fluxion_variants", None) or {})
+    variant_lines: list[str] = ["declare -A FLUXION_VARIANT_PREFIXES=()", "FLUXION_VARIANT_NAMES=()"]
+    for name, prefix in sorted(fluxion_variants.items()):
+        variant_lines.append(
+            f"FLUXION_VARIANT_PREFIXES[{shlex.quote(name)}]={shlex.quote(str(prefix))}"
+        )
+        variant_lines.append(f"FLUXION_VARIANT_NAMES+=({shlex.quote(name)})")
     script = "\n".join(
         [
             "#!/usr/bin/env bash",
@@ -1564,6 +1591,10 @@ def ensure_worker_script(root: Path, spec: CampaignSpec | None = None) -> Path:
             f"IMAGE_TAR=\"${{FLUX_FICTION_CONTAINER_IMAGE_TAR:-{image_tar}}}\"",
             f"CONTAINER_PYTHONPATH=\"${{FLUX_FICTION_CONTAINER_PYTHONPATH:-{container_pythonpath}}}\"",
             f"SOURCE_ROOT=\"${{FLUX_FICTION_SOURCE_ROOT:-{source_root}}}\"",
+            "# Named Fluxion builds this campaign draws on (spec table",
+            "# `grid.fluxion_variants`). Empty for single-build campaigns, which",
+            "# then behave exactly as before.",
+            *variant_lines,
             f"REPO_ROOT=\"${{FLUX_FICTION_REPO_ROOT:-{repo_root}}}\"",
             f"DEFAULT_WORKER_RUNTIME={json.dumps(default_worker_runtime)}",
             f"DEFAULT_FLUX_LAUNCH={json.dumps(default_flux_launch)}",
@@ -1659,6 +1690,35 @@ def ensure_worker_script(root: Path, spec: CampaignSpec | None = None) -> Path:
             "  fi",
             "}",
             "",
+            "# Copy every named Fluxion build onto node-local disk before any run",
+            "# starts. The modules are dlopen'd twice per run by every replica, so",
+            "# serving them from Lustre puts the whole batch's module loads on a",
+            "# shared filesystem for no benefit -- the prefixes are read-only and",
+            "# small. Staging also removes the need to bind-mount an arbitrary",
+            "# host path into the container: the stage lives under SCRATCH_HOST,",
+            "# which is already mounted at /scratch.",
+            "stage_fluxion_variants() {",
+            "  local stage_root=\"$1\" name src dest",
+            "  [[ ${#FLUXION_VARIANT_NAMES[@]} -eq 0 ]] && return 0",
+            "  mkdir -p \"${stage_root}\"",
+            "  for name in \"${FLUXION_VARIANT_NAMES[@]}\"; do",
+            "    src=\"${FLUXION_VARIANT_PREFIXES[${name}]}\"",
+            "    dest=\"${stage_root}/${name}\"",
+            "    [[ -d \"${src}\" ]] || { echo \"fluxion variant '${name}' prefix not found: ${src}\" >&2; exit 6; }",
+            "    mkdir -p \"${dest}\"",
+            # `cp -a` returns spurious ENOENT on the setgid NFS install prefixes
+            # and leaves a partial copy; tar through a subshell is the pattern
+            # that works there and is equally fine on Lustre.
+            "    ( cd \"${src}\" && tar -cf - . ) | ( cd \"${dest}\" && tar -xf - ) \\",
+            "      || { echo \"failed to stage fluxion variant '${name}' from ${src}\" >&2; exit 6; }",
+            "    for module in sched-fluxion-resource.so sched-fluxion-feasibility.so sched-fluxion-qmanager.so; do",
+            "      [[ -f \"${dest}/lib/flux/modules/${module}\" ]] \\",
+            "        || { echo \"staged fluxion variant '${name}' is missing ${module}\" >&2; exit 6; }",
+            "    done",
+            "    echo \"Staged fluxion variant '${name}': ${src} -> ${dest}\"",
+            "  done",
+            "}",
+            "",
             "write_spack_modprobe_overlay() {",
             "  local overlay=\"$1\"",
             "  mkdir -p \"${overlay}/modprobe.d\"",
@@ -1732,6 +1792,9 @@ def ensure_worker_script(root: Path, spec: CampaignSpec | None = None) -> Path:
             "SCRATCH_ROOT=\"$(choose_scratch_root)\"",
             "echo \"Scratch root (broker rundir + KVS): ${SCRATCH_ROOT}\"",
             "SCRATCH_HOST=\"$(mktemp -d \"${SCRATCH_ROOT}/ffensemble.XXXXXX\")\"",
+            # SCRATCH_HOST is bind-mounted at /scratch, so the staged prefixes
+            # are reachable inside the container without a mount per variant.
+            "stage_fluxion_variants \"${SCRATCH_HOST}/fluxion\"",
             "CONTAINER_NAME=\"ffe-${BATCH_ID}-$(date +%s)-$$\"",
             "WAIT_PATH=\"${SCRATCH_HOST}/container.exit\"",
             "WAIT_ERR_PATH=\"${SCRATCH_HOST}/container.wait.err\"",
@@ -1766,6 +1829,7 @@ def ensure_worker_script(root: Path, spec: CampaignSpec | None = None) -> Path:
             "  -e FLUX_FICTION_FLUX_LAUNCH=\"${FLUX_FICTION_FLUX_LAUNCH:-}\" \\",
             "  -e FLUX_FICTION_FLUX_LAUNCH_CORES=\"${FLUX_FICTION_FLUX_LAUNCH_CORES:-}\" \\",
             "  -e FLUX_FICTION_SCRATCH=/scratch \\",
+            "  -e FLUX_FICTION_FLUXION_STAGE_ROOT=/scratch/fluxion \\",
             # The child broker derives its rundir from TMPDIR, and the KVS
             # content backing store (content.sqlite) lives there. Without this
             # it lands on the container's overlay -- fuse-overlayfs at this
@@ -1834,6 +1898,9 @@ def ensure_worker_script(root: Path, spec: CampaignSpec | None = None) -> Path:
             "  SCRATCH_ROOT=\"$(choose_scratch_root)\"",
             "  echo \"Scratch root (host Spack runtime): ${SCRATCH_ROOT}\"",
             "  SCRATCH_HOST=\"$(mktemp -d \"${SCRATCH_ROOT}/ffensemble-spack.XXXXXX\")\"",
+            # No container here, so the stage root is the host path itself.
+            "  stage_fluxion_variants \"${SCRATCH_HOST}/fluxion\"",
+            "  export FLUX_FICTION_FLUXION_STAGE_ROOT=\"${SCRATCH_HOST}/fluxion\"",
             "  cleanup() {",
             "    pkill -9 -f flux-broker 2>/dev/null || true",
             "    pkill -9 -f flux-shell 2>/dev/null || true",
@@ -2774,6 +2841,7 @@ RESULTS_COLUMNS = [
     "state",
     "queue_policy",
     "match_policy",
+    "fluxion_variant",
     "rabbit_job_percentage",
     "rabbit_ceiling_percentage",
     "rabbit_distribution",
@@ -2856,6 +2924,7 @@ def write_results_csv(root: Path, *, spec: CampaignSpec | None = None) -> Path:
                     "state": run.get("state") or progress.get("status") or "queued",
                     "queue_policy": task.get("queue_policy", ""),
                     "match_policy": task.get("match_policy", ""),
+                    "fluxion_variant": task.get("fluxion_variant") or "",
                     "rabbit_job_percentage": task.get("rabbit_job_percentage", ""),
                     "rabbit_ceiling_percentage": task.get("rabbit_ceiling_percentage", ""),
                     "rabbit_distribution": task.get("rabbit_distribution", ""),

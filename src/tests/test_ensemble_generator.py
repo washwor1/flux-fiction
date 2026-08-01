@@ -88,6 +88,7 @@ def _write_spec(
     rabbit_capacity: int | None = 1000,
     resource_file: Path | None = None,
     campaign_extra: str = "",
+    grid_extra: str = "",
 ) -> Path:
     rabbit_capacity_line = "" if rabbit_capacity is None else f"capacity_gib = {rabbit_capacity}"
     resource_file_line = "" if resource_file is None else f'resource_file = "{resource_file}"'
@@ -127,6 +128,7 @@ queue_policies = ["easy", "fcfs"]
 match_policies = ["lonodex"]
 rabbit_job_percentages = [0, 50]
 rabbit_ceiling_percentages = [0, 10]
+{grid_extra}
 
 [flux]
 base_config = "{config}"
@@ -1225,3 +1227,201 @@ def test_results_csv_prefers_the_newest_attempts_summary(tmp_path: Path):
     rows = {r["task_id"]: r for r in csv.DictReader(
         write_results_csv(root, spec=spec).open(encoding="utf-8"))}
     assert rows[task_id]["jobs_completed"] == "100"
+
+
+def _make_fluxion_prefix(root: Path, name: str, *, complete: bool = True) -> Path:
+    prefix = root / name
+    module_dir = prefix / "lib" / "flux" / "modules"
+    module_dir.mkdir(parents=True, exist_ok=True)
+    modules = [
+        "sched-fluxion-resource.so",
+        "sched-fluxion-feasibility.so",
+        "sched-fluxion-qmanager.so",
+    ]
+    if not complete:
+        modules = modules[:1]
+    for module in modules:
+        (module_dir / module).write_text(name, encoding="utf-8")
+    return prefix
+
+
+def _variant_grid_extra(baseline: Path, tuned: Path) -> str:
+    return f"""
+[grid.fluxion_variants]
+baseline = "{baseline}"
+tuned = "{tuned}"
+
+[grid.policy_variants]
+default = "baseline"
+fcfs = "tuned"
+"""
+
+
+def test_policy_variants_select_a_fluxion_build_per_queue_policy(tmp_path: Path):
+    trace, config, scheduler = _write_base_files(tmp_path)
+    baseline = _make_fluxion_prefix(tmp_path, "installs-baseline")
+    tuned = _make_fluxion_prefix(tmp_path, "installs-tuned")
+    spec_path = _write_spec(
+        tmp_path,
+        trace=trace,
+        config=config,
+        scheduler=scheduler,
+        grid_extra=_variant_grid_extra(baseline, tuned),
+    )
+    spec = load_campaign_spec(spec_path)
+
+    assert spec.grid.variant_for("easy") == "baseline"
+    assert spec.grid.variant_for("fcfs") == "tuned"
+
+    tasks = generate_tasks(spec)
+    by_policy = {task["queue_policy"]: task["fluxion_variant"] for task in tasks}
+    assert by_policy == {"easy": "baseline", "fcfs": "tuned"}
+    # Two variants are in play, so the id must disambiguate them.
+    assert all("__v" in task["task_id"] for task in tasks)
+
+
+def test_task_ids_are_unchanged_when_a_single_variant_is_used(tmp_path: Path):
+    trace, config, scheduler = _write_base_files(tmp_path)
+    baseline = _make_fluxion_prefix(tmp_path, "installs-baseline")
+    spec_path = _write_spec(
+        tmp_path,
+        trace=trace,
+        config=config,
+        scheduler=scheduler,
+        grid_extra=f"""
+[grid.fluxion_variants]
+baseline = "{baseline}"
+
+[grid.policy_variants]
+default = "baseline"
+""",
+    )
+    tasks = generate_tasks(load_campaign_spec(spec_path))
+    assert {task["fluxion_variant"] for task in tasks} == {"baseline"}
+    assert all("__v" not in task["task_id"] for task in tasks)
+
+
+def test_variant_is_written_into_the_per_task_config(tmp_path: Path):
+    trace, config, scheduler = _write_base_files(tmp_path)
+    baseline = _make_fluxion_prefix(tmp_path, "installs-baseline")
+    tuned = _make_fluxion_prefix(tmp_path, "installs-tuned")
+    spec_path = _write_spec(
+        tmp_path,
+        trace=trace,
+        config=config,
+        scheduler=scheduler,
+        grid_extra=_variant_grid_extra(baseline, tuned),
+    )
+    spec = load_campaign_spec(spec_path)
+    tasks = generate_tasks(spec)
+    task = next(item for item in tasks if item["queue_policy"] == "fcfs")
+
+    task_dir = tmp_path / "task"
+    task_dir.mkdir()
+    generated = materialize_task_inputs(spec, task, task_dir)
+
+    text = generated["config"].read_text(encoding="utf-8")
+    assert 'fluxion_variant = "tuned"' in text
+
+
+def test_worker_script_stages_every_variant_to_node_local_disk(tmp_path: Path):
+    trace, config, scheduler = _write_base_files(tmp_path)
+    baseline = _make_fluxion_prefix(tmp_path, "installs-baseline")
+    tuned = _make_fluxion_prefix(tmp_path, "installs-tuned")
+    spec_path = _write_spec(
+        tmp_path,
+        trace=trace,
+        config=config,
+        scheduler=scheduler,
+        grid_extra=_variant_grid_extra(baseline, tuned),
+    )
+    spec = load_campaign_spec(spec_path)
+    root = tmp_path / "campaign-root"
+    root.mkdir()
+    text = ensure_worker_script(root, spec).read_text(encoding="utf-8")
+
+    assert f"FLUXION_VARIANT_PREFIXES[baseline]={baseline}" in text
+    assert f"FLUXION_VARIANT_PREFIXES[tuned]={tuned}" in text
+    assert 'stage_fluxion_variants "${SCRATCH_HOST}/fluxion"' in text
+    # Staged under /scratch, which is already bind-mounted -- no per-variant mount.
+    assert "-e FLUX_FICTION_FLUXION_STAGE_ROOT=/scratch/fluxion" in text
+    # cp -a returns spurious ENOENT on the setgid NFS prefixes.
+    assert "tar -cf - ." in text
+
+
+def test_worker_script_has_no_variant_table_without_variants(tmp_path: Path):
+    trace, config, scheduler = _write_base_files(tmp_path)
+    spec_path = _write_spec(tmp_path, trace=trace, config=config, scheduler=scheduler)
+    spec = load_campaign_spec(spec_path)
+    root = tmp_path / "campaign-root"
+    root.mkdir()
+    text = ensure_worker_script(root, spec).read_text(encoding="utf-8")
+
+    # The staging helper is always defined; what must be absent is any entry in
+    # the table it reads, so the loop is a no-op.
+    assert "FLUXION_VARIANT_NAMES=()" in text
+    assert "FLUXION_VARIANT_NAMES+=(" not in text
+    assert "declare -A FLUXION_VARIANT_PREFIXES=()" in text
+    assert "FLUXION_VARIANT_PREFIXES[baseline]=" not in text
+
+
+def test_unknown_variant_reference_is_rejected(tmp_path: Path):
+    trace, config, scheduler = _write_base_files(tmp_path)
+    baseline = _make_fluxion_prefix(tmp_path, "installs-baseline")
+    spec_path = _write_spec(
+        tmp_path,
+        trace=trace,
+        config=config,
+        scheduler=scheduler,
+        grid_extra=f"""
+[grid.fluxion_variants]
+baseline = "{baseline}"
+
+[grid.policy_variants]
+default = "typo-variant"
+""",
+    )
+    with pytest.raises(EnsembleConfigError, match="undefined variant"):
+        load_campaign_spec(spec_path)
+
+
+def test_prefix_without_modules_is_rejected(tmp_path: Path):
+    trace, config, scheduler = _write_base_files(tmp_path)
+    broken = _make_fluxion_prefix(tmp_path, "installs-broken", complete=False)
+    spec_path = _write_spec(
+        tmp_path,
+        trace=trace,
+        config=config,
+        scheduler=scheduler,
+        grid_extra=f"""
+[grid.fluxion_variants]
+broken = "{broken}"
+
+[grid.policy_variants]
+default = "broken"
+""",
+    )
+    with pytest.raises(EnsembleConfigError, match="missing sched-fluxion"):
+        load_campaign_spec(spec_path)
+
+
+def test_policy_without_a_variant_mapping_is_rejected(tmp_path: Path):
+    trace, config, scheduler = _write_base_files(tmp_path)
+    baseline = _make_fluxion_prefix(tmp_path, "installs-baseline")
+    spec_path = _write_spec(
+        tmp_path,
+        trace=trace,
+        config=config,
+        scheduler=scheduler,
+        grid_extra=f"""
+[grid.fluxion_variants]
+baseline = "{baseline}"
+
+[grid.policy_variants]
+easy = "baseline"
+""",
+    )
+    # `fcfs` is swept but unmapped and there is no default: it would silently
+    # run whatever build the worker environment last pointed at.
+    with pytest.raises(EnsembleConfigError, match="no entry"):
+        load_campaign_spec(spec_path)

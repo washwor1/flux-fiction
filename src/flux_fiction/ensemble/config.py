@@ -201,6 +201,25 @@ class GridSettings:
     # degenerate set collapses to a single control per policy cell instead of
     # being run once per redundant pairing.
     collapse_zero_rabbit: bool = True
+    # Named Fluxion builds this campaign may draw on: name -> install prefix on
+    # the submitting host. The prefix is the directory holding
+    # `lib/flux/modules/sched-fluxion-*.so`. Each named prefix is staged to
+    # node-local disk by the worker before any run starts, so the runs read the
+    # modules from local storage rather than Lustre.
+    fluxion_variants: dict[str, str] = field(default_factory=dict)
+    # Which variant each queue policy uses: queue_policy -> variant name, plus
+    # an optional "default" key for policies not listed. This is what lets one
+    # arm carry a DIFFERENT Fluxion build per policy, which is the whole point
+    # -- the traverser patches are policy-dependent (cancel-refresh helps
+    # conservative and costs easy/hybrid), so a single build per campaign cannot
+    # express a best-of configuration.
+    policy_variants: dict[str, str] = field(default_factory=dict)
+
+    def variant_for(self, queue_policy: str) -> str | None:
+        """Variant name for a queue policy, or None to leave the build alone."""
+        if not self.policy_variants:
+            return None
+        return self.policy_variants.get(queue_policy) or self.policy_variants.get("default")
 
 
 @dataclass(frozen=True)
@@ -298,6 +317,80 @@ def _load_queue_limits(submission_data: dict[str, Any], queues: list[str]) -> di
             ),
         )
     return limits
+
+
+#: Modules that must be present for a directory to count as a Fluxion prefix.
+FLUXION_MODULE_NAMES = (
+    "sched-fluxion-resource.so",
+    "sched-fluxion-feasibility.so",
+    "sched-fluxion-qmanager.so",
+)
+
+
+def _load_fluxion_variants(grid_data: dict[str, Any], *, base: Path) -> dict[str, str]:
+    raw = grid_data.get("fluxion_variants") or {}
+    if not isinstance(raw, dict):
+        raise EnsembleConfigError(
+            "grid.fluxion_variants must be a table of NAME = \"/install/prefix\" pairs"
+        )
+    variants: dict[str, str] = {}
+    for name, value in raw.items():
+        clean = _validate_name(str(name))
+        prefix = _resolve_path(str(value), base=base, must_exist=True)
+        if prefix is None:
+            raise EnsembleConfigError(f"grid.fluxion_variants.{name} must name a directory")
+        module_dir = Path(prefix) / "lib" / "flux" / "modules"
+        missing = [
+            module for module in FLUXION_MODULE_NAMES if not (module_dir / module).is_file()
+        ]
+        if missing:
+            # A prefix that resolves but has no modules produces a campaign that
+            # runs to completion against whatever build happened to be loaded --
+            # a silently null A/B. Fail at spec load instead.
+            raise EnsembleConfigError(
+                f"grid.fluxion_variants.{name} ({prefix}) is missing "
+                f"{', '.join(missing)} under lib/flux/modules"
+            )
+        variants[clean] = prefix
+    return variants
+
+
+def _load_policy_variants(grid_data: dict[str, Any]) -> dict[str, str]:
+    raw = grid_data.get("policy_variants") or {}
+    if not isinstance(raw, dict):
+        raise EnsembleConfigError(
+            "grid.policy_variants must be a table of QUEUE_POLICY = \"variant\" pairs"
+        )
+    return {str(key): str(value) for key, value in raw.items()}
+
+
+def _validate_variant_selection(grid: GridSettings) -> None:
+    if grid.policy_variants and not grid.fluxion_variants:
+        raise EnsembleConfigError(
+            "grid.policy_variants is set but grid.fluxion_variants is empty"
+        )
+    unknown = {
+        name for name in grid.policy_variants.values() if name not in grid.fluxion_variants
+    }
+    if unknown:
+        raise EnsembleConfigError(
+            "grid.policy_variants references undefined variant(s): "
+            + ", ".join(sorted(unknown))
+        )
+    # Every swept policy must resolve to a build, or some cells would silently
+    # run whatever the worker environment last pointed at.
+    if grid.fluxion_variants and not grid.policy_variants:
+        raise EnsembleConfigError(
+            "grid.fluxion_variants is set but grid.policy_variants selects none of them"
+        )
+    unmapped = [
+        policy for policy in grid.queue_policies if grid.variant_for(policy) is None
+    ]
+    if grid.policy_variants and unmapped:
+        raise EnsembleConfigError(
+            "grid.policy_variants has no entry (and no \"default\") for queue policy/policies: "
+            + ", ".join(sorted(unmapped))
+        )
 
 
 class _ResourceProbe:
@@ -538,9 +631,12 @@ def load_campaign_spec(path: str | os.PathLike[str]) -> CampaignSpec:
         ),
         rabbit_distributions=rabbit_distributions,
         collapse_zero_rabbit=bool(grid_data.get("collapse_zero_rabbit", True)),
+        fluxion_variants=_load_fluxion_variants(grid_data, base=base),
+        policy_variants=_load_policy_variants(grid_data),
     )
     if not grid.queue_policies or not grid.match_policies:
         raise EnsembleConfigError("grid.queue_policies and grid.match_policies must not be empty")
+    _validate_variant_selection(grid)
     rabbit_tail_alpha = float(rabbit_data.get("tail_alpha", 1.5))
     if rabbit_tail_alpha <= 0:
         raise EnsembleConfigError("rabbit.tail_alpha must be > 0")
