@@ -163,6 +163,10 @@ class ExperimentConfig:
     jobtap_logging: bool = False
     rabbit_storage_emit_dw: bool = False
     rabbit_storage_name: str = "rabbit"
+    # Request nodes (and any requested accelerators/storage) without a core
+    # child in the generated jobspec.  This is useful for isolating how a
+    # scheduler handles node-only requests from CPU-constrained requests.
+    omit_core_resources: bool = False
     # Pipeline job submissions: start every submission for a timestep before
     # collecting any job id, instead of one blocking round-trip per job. Every
     # id is collected before the scheduler is told what to expect, so the
@@ -228,6 +232,7 @@ class ExperimentConfigModel(BaseModel):
     jobtap_logging: bool = False
     rabbit_storage_emit_dw: bool = False
     rabbit_storage_name: str = "rabbit"
+    omit_core_resources: bool = False
     # Pipeline job submissions: start every submission for a timestep before
     # collecting any job id, instead of one blocking round-trip per job. Every
     # id is collected before the scheduler is told what to expect, so the

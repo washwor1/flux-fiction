@@ -5,10 +5,13 @@ import argparse
 import csv
 from contextlib import nullcontext
 from datetime import datetime
+import gzip
+import hashlib
 import importlib.util
 import json
 import os
 from pathlib import Path
+import re
 import shlex
 import shutil
 import signal
@@ -16,8 +19,7 @@ import subprocess
 import sys
 import threading
 import time
-import hashlib
-from typing import Any
+from typing import Any, Iterator
 
 from flux_fiction.api.status import RunStatusWriter, utcnow_iso
 from flux_fiction.faketime_paths import default_stampfile_path
@@ -441,7 +443,14 @@ def configure_dftracer_env(env: dict[str, str], run_root: Path) -> dict[str, str
     configured_prefix = env.get("DFTRACER_LOG_FILE")
     if configured_prefix:
         base_prefix = Path(configured_prefix).expanduser()
-        trace_prefix = base_prefix.parent / run_root.name / base_prefix.name
+        # ``run_ff_parallel`` gives each run a unique parent directory but
+        # calls this launcher with ``<parent>/child``.  Keying solely on
+        # ``child`` would make every concurrent process append to the same
+        # trace directory.  Recognize that layout and retain its unique parent.
+        trace_scope = run_root.name
+        if trace_scope == "child" and (run_root.parent / "launch_config.toml").is_file():
+            trace_scope = run_root.parent.name
+        trace_prefix = base_prefix.parent / trace_scope / base_prefix.name
     else:
         trace_prefix = run_root / "dftracer" / "flux-fiction"
 
@@ -456,6 +465,91 @@ def configure_dftracer_env(env: dict[str, str], run_root: Path) -> dict[str, str
 
     env.update(dftracer_env)
     return dftracer_env
+
+
+def read_dftracer_events(path: Path) -> Iterator[dict[str, Any]]:
+    """Yield valid events from a dftracer ``.pfw`` or ``.pfw.gz`` file."""
+    opener = gzip.open if path.suffix == ".gz" else open
+    with opener(path, "rt", encoding="utf-8", errors="replace") as trace_file:
+        for line in trace_file:
+            line = line.strip().rstrip(",")
+            if not line or line in ("[", "]"):
+                continue
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(event, dict):
+                yield event
+
+
+def dftracer_trace_role(path: Path) -> str:
+    """Identify which half of a Flux Fiction run wrote ``path``.
+
+    The C++ Fluxion modules can be unloaded and reloaded, so their filename is
+    not enough to distinguish a module generation.  Their event category is.
+    This keeps the source labels compatible with the standalone merger.
+    """
+    for event in read_dftracer_events(path):
+        if event.get("cat") == "simulation":
+            return "flux-fiction"
+        args = event.get("args")
+        if (
+            event.get("ph") == "M"
+            and isinstance(args, dict)
+            and args.get("name") == "app"
+            and args.get("value") == "flux-fiction"
+        ):
+            return "flux-fiction"
+        if event.get("cat") == "CPP_APP":
+            generation = re.search(r"-fluxion-gen(\d+)-", path.name)
+            return f"fluxion (gen{generation.group(1)})" if generation else "fluxion"
+    return "unknown"
+
+
+def merge_dftracer_traces(trace_prefix: str | Path) -> tuple[Path | None, int]:
+    """Merge this run's dftracer process traces into ``unified-trace.pfw.gz``.
+
+    dftracer emits one trace per process.  This is deliberately streaming: a
+    production run can contain millions of Fluxion events, so the launcher must
+    not retain the complete trace in memory merely to concatenate it.  A failed
+    or incomplete individual trace is surfaced to the caller and never replaces
+    an already-complete merged trace.
+    """
+    trace_dir = Path(trace_prefix).expanduser().parent
+    output = trace_dir / "unified-trace.pfw.gz"
+    temporary = trace_dir / ".unified-trace.pfw.gz.tmp"
+    trace_files = sorted(
+        path
+        for path in trace_dir.rglob("*.pfw*")
+        if path.is_file() and path != output and path != temporary
+    )
+    if not trace_files:
+        return None, 0
+
+    roles = {path: dftracer_trace_role(path) for path in trace_files}
+    event_count = 0
+    try:
+        with gzip.open(temporary, "wt", encoding="utf-8") as merged_file:
+            # PFW is dftracer's line-oriented Chrome-trace framing.  Preserve
+            # that format instead of converting timestamps or event phases.
+            merged_file.write("[\n")
+            for path in trace_files:
+                for event in read_dftracer_events(path):
+                    args = event.get("args")
+                    if not isinstance(args, dict):
+                        args = {}
+                        event["args"] = args
+                    args["source"] = roles[path]
+                    args["source_file"] = path.name
+                    merged_file.write(json.dumps(event) + "\n")
+                    event_count += 1
+    except Exception:
+        temporary.unlink(missing_ok=True)
+        raise
+
+    temporary.replace(output)
+    return output, event_count
 
 
 def prepare_config(
@@ -604,6 +698,15 @@ def build_inner_script(ff_root: Path, generated_config: Path, stampfile: str | N
         "if [[ \"${ff_rc}\" -eq 0 ]]; then",
         "  " + " ".join(shell_quote(part) for part in capture_sample_cmd),
         "fi",
+        # Fluxion's resource and qmanager modules each own background reactor
+        # work.  Letting flux-start tear every module down concurrently can
+        # strand a joinable C++ thread in sched-fluxion-resource, producing
+        # `terminate called without an active exception` after an otherwise
+        # successful simulation.  Remove the scheduler stack in dependency
+        # order while the broker is still fully operational.
+        "flux module remove sched-fluxion-qmanager 2>/dev/null || true",
+        "flux module remove sched-fluxion-feasibility 2>/dev/null || true",
+        "flux module remove sched-fluxion-resource 2>/dev/null || true",
         "exit \"${ff_rc}\"",
     ])
 
@@ -1103,6 +1206,32 @@ def main() -> int:
 
     if proc is None:
         return 1
+
+    if dftracer_env:
+        try:
+            merged_trace, merged_event_count = merge_dftracer_traces(
+                dftracer_env["DFTRACER_LOG_FILE"]
+            )
+        except Exception as exc:
+            # Trace post-processing should not turn an otherwise usable
+            # simulation result into a failed run.  Preserve the source files
+            # and make the failure visible in both the terminal and status.
+            merge_error = f"{type(exc).__name__}: {exc}"
+            status.update(dftracer_merge_error=merge_error)
+            print(f"WARNING: could not merge DFTracer traces: {merge_error}", file=sys.stderr)
+        else:
+            if merged_trace is None:
+                status.update(dftracer_merged_trace=None, dftracer_merged_events=0)
+                print("WARNING: DFTracer was enabled but wrote no trace files", file=sys.stderr)
+            else:
+                status.update(
+                    dftracer_merged_trace=str(merged_trace),
+                    dftracer_merged_events=merged_event_count,
+                )
+                print(
+                    f"Merged DFTracer:  {merged_trace} "
+                    f"({merged_event_count:,} events)",
+                )
 
     broker_errors = broker_log_matches(broker_log, SCHED_RESOURCE_ERROR_NEEDLE)
     emergency_dir = run_root / "output"

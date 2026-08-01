@@ -123,3 +123,19 @@ def test_jobspec_override_bypasses_generated_shape():
     job.set_jobspec_override(override)
 
     assert job.jobspec == override
+
+
+def test_generated_jobspec_can_omit_core_resources():
+    job = Job(
+        nnodes=4,
+        ncpus=160,
+        submit_time=0,
+        elapsed_time=10,
+        timelimit=20,
+    )
+    job.set_jobspec_shape({}, omit_core_resources=True)
+
+    node = job.jobspec["resources"][0]
+    assert node["type"] == "node"
+    assert node["count"] == 4
+    assert "with" not in node
