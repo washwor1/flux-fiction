@@ -1,0 +1,30 @@
+# Base flux-fiction config for the gaussian sweep, with NO resource pin.
+#
+# Copied from flux-fiction-accuracy-tests/configs/tuo_pbatch.toml with
+# `resource_R` deliberately removed. That key is the whole reason this file
+# exists: `_load_base_config` only drops `resource_R` when the ensemble spec
+# sets `resource_file` (or vice versa), so simply omitting both from the spec
+# leaves the base config's `resource_R = .../tuolumne.json` in place. The run
+# then demands the 1,144-node graph instead of synthesizing 128 nodes, and dies
+# with `resource_R not found after path mapping` before any job starts.
+#
+# With neither key present, flux-fiction synthesizes the graph from
+# nnodes/ncpus/ngpus -- which is what the dftracer-gaussian matrix did, and what
+# completed 500/500 there.
+#
+# `job_traces` and `config_json` are placeholders: the ensemble overwrites both
+# per task.
+
+[flux_fiction]
+job_traces = "/workspace/tuo_pbatch.csv"
+config_json = "/workspace/flux-fiction-accuracy-tests/configs/tuo_pbatch_scheduler.json"
+ncpus = 96
+ngpus = 0
+backend = "flux"
+quiet = true
+batch_job_starts = false
+account_system_latency = true
+jobtap_logging = false
+# ERROR only. At the default 10 (DEBUG) emu.log reached ~41 MB per replica and
+# competes with the simulation for Lustre bandwidth. Failures still surface.
+log_level = 40

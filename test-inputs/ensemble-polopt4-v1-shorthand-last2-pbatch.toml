@@ -1,0 +1,91 @@
+# Targeted pbatch recovery for the two missing polopt4 v1-shorthand rows.
+# The full generator cannot select duplicate 7 and duplicate 9 directly, so this
+# spec preserves the original seed/duplicate/rabbit-seed sequence and the
+# initialized task ledger is narrowed to the two intended rabbit-on tasks.
+
+[campaign]
+name = "polopt4-v1-shorthand-last2-pbatch"
+output_root = "/p/lustre5/ashworth12/ff-polopt4-sweep-20260802"
+batch_size = 2
+poll_interval_seconds = 60
+walltime_minutes = 240
+keep_generated_traces = false
+no_faketime = false
+broker_log_level = 3
+no_broker_log_file = true
+finalize_reserve_seconds = 600
+flux_launch = true
+
+[campaign.worker_env]
+FLUX_FICTION_CONTAINER_IMAGE = "localhost/flux-fiction-dev-dft:latest"
+FLUX_FICTION_CONTAINER_IMAGE_TAR = "/usr/WS1/ashworth12/ff-podman/flux-fiction-dev-dft.tar"
+FLUX_FICTION_CONTAINER_INSTALLS = "/p/lustre5/ashworth12/polopt-container-installs-nodeonly-20260801"
+FLUX_FICTION_NODEONLY_PREFIX = "/p/lustre5/ashworth12/flux-core-nodeonly.l5WGzh/prefix"
+FLUX_FICTION_JOBTAP_SO = "/usr/WS1/ashworth12/ff-podman/flux-fiction-shared-clock/build/cp312/src/emu-jobtap.so"
+FAKETIME_LIB = "/usr/WS1/ashworth12/ff-podman/libfaketime-shared-clock/src/libfaketimeMT.so.1"
+FLUX_FICTION_FAKETIME_MODE = "shared"
+NO_FAKE_STAT = "1"
+DFTRACER_ENABLE = "1"
+DFTRACER_TIME_METRIC = "NS"
+DFTRACER_INC_METADATA = "1"
+DFTRACER_DISABLE_IO = "1"
+DFTRACER_FLUXION_FINALIZE_GENERATION = "0"
+
+[input]
+trace = "/g/g14/ashworth12/workspace/ff-podman/tuo_queueB_10k_sat.csv"
+format = "tuolumne"
+slice_start = 0
+slice_count = 2000
+cpus_per_node = 96
+
+[shake]
+duplicates = 10
+attributes = ["interarrival", "runtime", "nodes"]
+job_percentage = 5
+degree_seconds = 60
+relative_degree_percent = 5
+max_nodes = 1144
+seed = 91001
+
+[rabbit]
+ceiling_basis = "rabbit_node"
+field_name = "RabbitGiB"
+mean_fraction = 0.5
+sigma_fraction = 0.16666666666666666
+tail_alpha = 1.5
+tail_min_gib = 100.0
+
+[grid]
+queue_policies = ["conservative"]
+match_policies = ["firstnodex", "lonodex"]
+rabbit_job_percentages = [20]
+rabbit_ceiling_percentages = [20]
+rabbit_distributions = ["pareto"]
+
+[grid.fluxion_variants]
+baseline = "/p/lustre5/ashworth12/dftracer-gaussian-backfill-rd4-o3-final-20260730_052656/installs-baseline/flux-sched"
+
+[grid.policy_variants]
+default = "baseline"
+
+[flux]
+base_config = "/usr/WS1/ashworth12/ff-podman/flux-fiction-accuracy-tests/configs/tuo_pbatch.toml"
+base_config_json = "/usr/WS1/ashworth12/ff-podman/flux-fiction-shared-clock/test-inputs/polopt-scheduler.json"
+resource_file = "/usr/WS1/ashworth12/ff-podman/resource_graphs/tuolumne.json"
+
+[flux.config_overrides]
+make_plots = false
+nnodes = 1144
+ncpus = 96
+ngpus = 4
+omit_core_resources = false
+async_submit = true
+submit_novalidate = true
+
+[submission]
+queues = ["pbatch"]
+job_name_prefix = "ffe-r4v1x"
+backend = "flux"
+
+[submission.queue_limits.pbatch]
+max_active = 1

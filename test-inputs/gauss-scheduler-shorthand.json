@@ -1,0 +1,26 @@
+{
+  "ingest": {
+    "frobnicator": {
+      "disable": true,
+      "plugins": []
+    },
+    "validator": {
+      "disable": true,
+      "plugins": []
+    }
+  },
+  "sched-fluxion-qmanager": {
+    "queue-policy": "fcfs",
+    "queue-params": {
+      "queue-depth": 1024
+    },
+    "policy-params": {
+      "reservation-depth": 4
+    }
+  },
+  "sched-fluxion-resource": {
+    "match-policy": "firstnodex",
+    "match-format": "jgf_shorthand",
+    "prune-filters": "ALL:core"
+  }
+}

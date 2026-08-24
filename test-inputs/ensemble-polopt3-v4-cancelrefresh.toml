@@ -1,0 +1,97 @@
+# Full-trace per-optimization sweep, tuolumne 10,000 jobs (pbatch)
+# ARM v4-cancelrefresh: no cores + cancel-refresh patch only
+#
+# Levers: match-format=jgf, omit_core_resources=true, fluxion=cancel-refresh-only
+# Grid: 3 queue policies x 2 match policies x rabbit off/on x 10 shakes = 120 tasks.
+# One of 7 optimization levels; 7 x 12 cells = 84 variants, 840 tasks per experiment.
+# Walltime 18h: see the per-level sizing table in the 2026-08-02 RUNLOG rows.
+
+[campaign]
+name = "polopt3-v4-cancelrefresh"
+output_root = "/p/lustre5/ashworth12/ff-polopt3-sweep-20260802"
+batch_size = 16
+poll_interval_seconds = 60
+walltime_minutes = 1080
+keep_generated_traces = false
+no_faketime = false
+broker_log_level = 3
+no_broker_log_file = true
+finalize_reserve_seconds = 600
+flux_launch = true
+
+[campaign.worker_env]
+FLUX_FICTION_CONTAINER_IMAGE = "localhost/flux-fiction-dev-dft:latest"
+FLUX_FICTION_CONTAINER_IMAGE_TAR = "/usr/WS1/ashworth12/ff-podman/flux-fiction-dev-dft.tar"
+FLUX_FICTION_CONTAINER_INSTALLS = "/p/lustre5/ashworth12/polopt-container-installs-nodeonly-20260801"
+FLUX_FICTION_NODEONLY_PREFIX = "/p/lustre5/ashworth12/flux-core-nodeonly.l5WGzh/prefix"
+FLUX_FICTION_JOBTAP_SO = "/usr/WS1/ashworth12/ff-podman/flux-fiction-shared-clock/build/cp312/src/emu-jobtap.so"
+FAKETIME_LIB = "/usr/WS1/ashworth12/ff-podman/libfaketime-shared-clock/src/libfaketimeMT.so.1"
+FLUX_FICTION_FAKETIME_MODE = "shared"
+NO_FAKE_STAT = "1"
+DFTRACER_ENABLE = "1"
+DFTRACER_TIME_METRIC = "NS"
+DFTRACER_INC_METADATA = "1"
+DFTRACER_DISABLE_IO = "1"
+DFTRACER_FLUXION_FINALIZE_GENERATION = "0"
+
+[input]
+trace = "/g/g14/ashworth12/workspace/ff-podman/tuo_queueB_10k_sat.csv"
+format = "tuolumne"
+slice_start = 0
+slice_count = 10000
+cpus_per_node = 96
+
+[shake]
+duplicates = 10
+attributes = ["interarrival", "runtime", "nodes"]
+job_percentage = 5
+degree_seconds = 60
+relative_degree_percent = 5
+max_nodes = 1144
+seed = 91001
+
+[rabbit]
+ceiling_basis = "rabbit_node"
+field_name = "RabbitGiB"
+mean_fraction = 0.5
+sigma_fraction = 0.16666666666666666
+tail_alpha = 1.5
+tail_min_gib = 100.0
+
+[grid]
+queue_policies = ["easy", "hybrid", "conservative"]
+match_policies = ["firstnodex", "lonodex"]
+rabbit_job_percentages = [0, 20]
+rabbit_ceiling_percentages = [0, 20]
+rabbit_distributions = ["pareto"]
+
+[grid.fluxion_variants]
+cancel-refresh-only = "/p/lustre5/ashworth12/dftracer-cancel-refresh-only-build-20260802_154637/installs-cancel-refresh-only/flux-sched"
+
+# LEVER 3, unoptimized side: no traverser patches for any queue policy.
+[grid.policy_variants]
+default = "cancel-refresh-only"
+
+[flux]
+base_config = "/usr/WS1/ashworth12/ff-podman/flux-fiction-accuracy-tests/configs/tuo_pbatch.toml"
+# LEVER 1, unoptimized side: "match-format": "jgf".
+base_config_json = "/usr/WS1/ashworth12/ff-podman/flux-fiction-shared-clock/test-inputs/polopt2-scheduler-jgf.json"
+resource_file = "/usr/WS1/ashworth12/ff-podman/resource_graphs/tuolumne.json"
+
+[flux.config_overrides]
+make_plots = false
+nnodes = 1144
+ncpus = 96
+ngpus = 4
+# LEVER 2, unoptimized side: cores ARE emitted in the jobspec.
+omit_core_resources = true
+async_submit = true
+submit_novalidate = true
+
+[submission]
+queues = ["pbatch"]
+job_name_prefix = "ffe-p3v4"
+backend = "flux"
+
+[submission.queue_limits.pbatch]
+max_active = 8

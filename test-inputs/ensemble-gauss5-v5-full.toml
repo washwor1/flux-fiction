@@ -1,0 +1,94 @@
+# Per-optimization sweep on the gaussian dataset, 128 SYNTHESIZED nodes (pdebug).
+# Reverted 2026-08-03 to the simple configuration: no resource_file, ngpus = 0,
+# and NO rabbit A/B. The 8-chassis real-graph variant (ff-gauss4-sweep-20260802)
+# was cancelled because the 5 trace jobs that request all 128 nodes never got an
+# allocation, stalling every run at 495/500 -- see the observation in INBOX.md.
+# Grid is now 3 queue policies x 2 match policies x 10 shakes = 60 tasks per level.
+
+[campaign]
+name = "gauss5-v5-full"
+output_root = "/p/lustre5/ashworth12/ff-gauss5-simple-20260803b"
+batch_size = 16
+poll_interval_seconds = 60
+walltime_minutes = 55
+keep_generated_traces = false
+no_faketime = false
+broker_log_level = 3
+no_broker_log_file = true
+finalize_reserve_seconds = 300
+flux_launch = true
+
+[campaign.worker_env]
+FLUX_FICTION_CONTAINER_IMAGE = "localhost/flux-fiction-dev-dft:latest"
+FLUX_FICTION_CONTAINER_IMAGE_TAR = "/usr/WS1/ashworth12/ff-podman/flux-fiction-dev-dft.tar"
+FLUX_FICTION_CONTAINER_INSTALLS = "/p/lustre5/ashworth12/polopt-container-installs-nodeonly-20260801"
+FLUX_FICTION_NODEONLY_PREFIX = "/p/lustre5/ashworth12/flux-core-nodeonly.l5WGzh/prefix"
+FLUX_FICTION_JOBTAP_SO = "/usr/WS1/ashworth12/ff-podman/flux-fiction-shared-clock/build/cp312/src/emu-jobtap.so"
+FAKETIME_LIB = "/usr/WS1/ashworth12/ff-podman/libfaketime-shared-clock/src/libfaketimeMT.so.1"
+FLUX_FICTION_FAKETIME_MODE = "shared"
+NO_FAKE_STAT = "1"
+DFTRACER_ENABLE = "1"
+DFTRACER_TIME_METRIC = "NS"
+DFTRACER_INC_METADATA = "1"
+DFTRACER_DISABLE_IO = "1"
+DFTRACER_FLUXION_FINALIZE_GENERATION = "0"
+
+[input]
+trace = "/usr/WS1/ashworth12/ff-podman/salishan_runs/experiment_tuolumne_easy_gaussian_random/processed/input_with_latencies_patched.csv"
+format = "sacct"
+slice_start = 0
+slice_count = 500
+cpus_per_node = 96
+
+[shake]
+duplicates = 10
+attributes = ["interarrival", "runtime", "nodes"]
+job_percentage = 5
+degree_seconds = 60
+relative_degree_percent = 5
+max_nodes = 128
+seed = 91001
+
+[rabbit]
+field_name = "RabbitGiB"
+mean_fraction = 0.5
+sigma_fraction = 0.16666666666666666
+tail_alpha = 1.5
+tail_min_gib = 100.0
+
+[grid]
+queue_policies = ["easy", "hybrid", "conservative"]
+match_policies = ["firstnodex", "lonodex"]
+rabbit_job_percentages = [0]
+rabbit_ceiling_percentages = [0]
+rabbit_distributions = ["pareto"]
+
+[grid.fluxion_variants]
+combined = "/p/lustre5/ashworth12/dftracer-gaussian-cancel-refresh-dftlocal-build-20260801_032143/installs-cancel-refresh-outedges-dftlocal/flux-sched"
+
+# LEVER 3, unoptimized side: no traverser patches for any queue policy.
+[grid.policy_variants]
+default = "combined"
+
+[flux]
+base_config = "/usr/WS1/ashworth12/ff-podman/flux-fiction-shared-clock/test-inputs/gauss-base-synth.toml"
+# LEVER 1, unoptimized side: "match-format": "jgf".
+base_config_json = "/usr/WS1/ashworth12/ff-podman/flux-fiction-shared-clock/test-inputs/gauss-scheduler-shorthand.json"
+
+[flux.config_overrides]
+make_plots = false
+nnodes = 128
+ncpus = 96
+ngpus = 0
+# LEVER 2, unoptimized side: cores ARE emitted in the jobspec.
+omit_core_resources = true
+async_submit = true
+submit_novalidate = true
+
+[submission]
+queues = ["pdebug"]
+job_name_prefix = "ffe-g5v5"
+backend = "flux"
+
+[submission.queue_limits.pdebug]
+max_active = 2
