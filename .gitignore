@@ -46,3 +46,6 @@ batch_result.json
 *.orig
 *.rej
 configure~
+
+# kept deliberately: evidence behind the shared-clock e2e comparison
+!benchmarks/**/logs/*.log
