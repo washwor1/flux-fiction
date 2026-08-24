@@ -24,3 +24,6 @@ src/*.json
 .coverage
 .coverage.*
 htmlcov/
+# run spill
+*.core
+flux-*.out
