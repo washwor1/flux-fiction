@@ -18,7 +18,7 @@ src/*.csv
 src/*.json
 /experiment_data/
 /test/
-/docs
+/site
 /src/runs
 /tmp
 .coverage
@@ -27,3 +27,22 @@ htmlcov/
 # run spill
 *.core
 flux-*.out
+
+# run + campaign spill (never commit experiment output)
+*.err
+/runs/
+/run-*/
+**/dftracer/
+summary.json
+results.csv
+progress.csv
+status.json
+parallel_status.json
+batch_result.json
+*.tar
+*.tar.gz
+/scratch/
+/l/
+*.orig
+*.rej
+configure~
