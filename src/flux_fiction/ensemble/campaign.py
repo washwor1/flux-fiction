@@ -685,6 +685,42 @@ def _reap_lingering_flux_processes() -> None:
             pass
 
 
+def _child_attempt_runs(parallel_root: Path) -> list[dict[str, Any]] | None:
+    """Per-run records from the newest attempt under `parallel_root`, or None.
+
+    Prefers `parallel_summary.json`, which the driver writes on a clean exit, and
+    falls back to `parallel_status.json`, which it keeps current as runs finish.
+    The fallback is the whole point: a batch killed at the wall clock never
+    reaches the summary write, so the summary is absent for exactly the batches
+    whose results are most at risk of being read as missing.
+    """
+    attempts = sorted(
+        (p for p in parallel_root.glob("*") if p.is_dir()),
+        key=lambda p: (p.name, _mtime_or_zero(p)),
+    )
+    for attempt in reversed(attempts):
+        for candidate in ("parallel_summary.json", "parallel_status.json"):
+            payload = read_json(attempt / candidate)
+            runs = payload.get("runs") if isinstance(payload, dict) else None
+            if runs:
+                return [run for run in runs if isinstance(run, dict)]
+    return None
+
+
+def _child_runs_all_complete(parallel_root: Path) -> bool:
+    """True when every run in the newest attempt finished all of its jobs."""
+    runs = _child_attempt_runs(parallel_root)
+    if not runs:
+        return False
+    for run in runs:
+        if run.get("state") != "succeeded":
+            return False
+        completed, total = run.get("jobs_completed"), run.get("jobs_total")
+        if completed is None or total is None or completed != total:
+            return False
+    return True
+
+
 def run_worker(root: str | os.PathLike[str], batch_id: str) -> int:
     worker_started = time.monotonic()
     campaign_dir = Path(root).expanduser().resolve()
@@ -794,15 +830,32 @@ def run_worker(root: str | os.PathLike[str], batch_id: str) -> int:
         }
         if proc.returncode != 0:
             if proc.returncode < 0:
-                # Negative rc from subprocess means "killed by signal N", which
-                # for these batches is the walltime kill arriving mid-run. Record
-                # it so reporting does not present a timeout as a crash.
-                result["terminated_by_signal"] = abs(int(proc.returncode))
-                result["failure_reason"] = (
-                    f"flux-fiction-run-parallel was terminated by signal "
-                    f"{abs(int(proc.returncode))} (walltime kill or cancel); "
-                    f"see {batch_root / 'batch.log'}"
-                )
+                signal_number = abs(int(proc.returncode))
+                result["terminated_by_signal"] = signal_number
+                if _child_runs_all_complete(parallel_root):
+                    # Every run finished all of its jobs and the driver recorded
+                    # them; the signal landed afterwards, while the container was
+                    # being torn down (`podman rm -f -t 5` plus the conmon /
+                    # catatonit reap in worker.sh). Calling that a failure marks
+                    # completed work as lost -- it is what made whole arms of
+                    # ff-polopt-ab-20260801 and ff-polopt2-ab-20260802 read as
+                    # having produced nothing. The batch succeeded; only the
+                    # shutdown was violent.
+                    result["state"] = "succeeded"
+                    result["teardown_kill"] = True
+                    result["teardown_note"] = (
+                        f"all {len(_child_attempt_runs(parallel_root) or [])} runs completed; "
+                        f"signal {signal_number} arrived during container teardown, "
+                        f"after the driver wrote its per-run results"
+                    )
+                else:
+                    # Genuinely cut short: the wall clock or a cancel arrived
+                    # while runs were still in flight.
+                    result["failure_reason"] = (
+                        f"flux-fiction-run-parallel was terminated by signal "
+                        f"{signal_number} (walltime kill or cancel); "
+                        f"see {batch_root / 'batch.log'}"
+                    )
             else:
                 result["failure_reason"] = (
                     f"flux-fiction-run-parallel exited rc={proc.returncode}; "
@@ -1820,6 +1873,12 @@ def ensure_worker_script(root: Path, spec: CampaignSpec | None = None) -> Path:
             "if ((${#CONTAINER_ENV_ARGS[@]})); then",
             "  echo \"Forwarding to container: ${CONTAINER_ENV_ARGS[*]}\"",
             "fi",
+            "NODEONLY_MOUNT_ARGS=()",
+            "if [[ -n \"${FLUX_FICTION_NODEONLY_PREFIX:-}\" ]]; then",
+            "  [[ -d \"${FLUX_FICTION_NODEONLY_PREFIX}\" ]] || { echo \"node-only flux-core prefix not found: ${FLUX_FICTION_NODEONLY_PREFIX}\" >&2; exit 4; }",
+            "  NODEONLY_MOUNT_ARGS=(-v \"${FLUX_FICTION_NODEONLY_PREFIX}:/test-root/prefix:ro\")",
+            "  echo \"Mounting node-only flux-core prefix at /test-root/prefix: ${FLUX_FICTION_NODEONLY_PREFIX}\"",
+            "fi",
             "",
             "CONTAINER_ID=\"$(podman run -d --rm --name \"${CONTAINER_NAME}\" --pull=never \\",
             "  ${CONTAINER_ENV_ARGS[@]+\"${CONTAINER_ENV_ARGS[@]}\"} \\",
@@ -1840,12 +1899,31 @@ def ensure_worker_script(root: Path, spec: CampaignSpec | None = None) -> Path:
             "  -e FLUX_FICTION_WORKER_EPOCH=\"${FLUX_FICTION_WORKER_EPOCH}\" \\",
             "  --shm-size=1g \\",
             "  --stop-timeout=90 \\",
+            "  ${NODEONLY_MOUNT_ARGS[@]+\"${NODEONLY_MOUNT_ARGS[@]}\"} \\",
             "  -v \"${SCRATCH_HOST}:/scratch\" \\",
             "  -v \"${CONTAINER_INSTALLS}:/workspace/container-installs:ro\" \\",
             "  -v \"${WORKSPACE_ROOT}:${WORKSPACE_ROOT}:rw\" \\",
             "  -v \"${CAMPAIGN_ROOT}:${CAMPAIGN_ROOT}:rw\" \\",
             "  \"${IMAGE}\" \\",
-            "  bash -lc 'if [[ -f /usr/local/bin/flux-dev-env.sh ]]; then source /usr/local/bin/flux-dev-env.sh; fi; exec python3 -m flux_fiction_ensemble worker \"$@\"' _ \"${CAMPAIGN_ROOT}\" \"${BATCH_ID}\" </dev/null)\"",
+            "  bash -lc 'if [[ -f /usr/local/bin/flux-dev-env.sh ]]; then source /usr/local/bin/flux-dev-env.sh; fi; "
+            "if [[ -d /workspace/container-installs/flux-core ]]; then "
+            "export FLUX_PREFIX=/workspace/container-installs/flux-core; "
+            "export PATH=\"${FLUX_PREFIX}/bin:${PATH:-}\"; "
+            "export LD_LIBRARY_PATH=\"${FLUX_PREFIX}/lib:${FLUX_PREFIX}/lib64:${LD_LIBRARY_PATH:-}\"; "
+            "export PKG_CONFIG_PATH=\"${FLUX_PREFIX}/lib/pkgconfig:${FLUX_PREFIX}/lib64/pkgconfig:${PKG_CONFIG_PATH:-}\"; "
+            "export FLUX_EXEC_PATH=\"${FLUX_PREFIX}/libexec/flux/cmd\"; "
+            "export FLUX_CONNECTOR_PATH=\"${FLUX_PREFIX}/lib/flux/connectors\"; "
+            "export FLUX_MODULE_PATH=\"${FLUX_PREFIX}/lib/flux/modules\"; "
+            "export LUA_PATH=\"${FLUX_PREFIX}/share/lua/5.1/?.lua;;;\"; "
+            "export LUA_CPATH=\"${FLUX_PREFIX}/lib/lua/5.1/?.so;;;\"; "
+            "export PYTHONPATH=\"${FLUX_PREFIX}/lib/flux/python3.12:${PYTHONPATH:-}\"; "
+            "fi; "
+            "if [[ -d /scratch/fluxion ]]; then "
+            "for _ff_lib in /scratch/fluxion/*/lib; do "
+            "[[ -d \"${_ff_lib}\" ]] && export LD_LIBRARY_PATH=\"${_ff_lib}:${LD_LIBRARY_PATH:-}\"; "
+            "done; "
+            "fi; "
+            "exec python3 -m flux_fiction_ensemble worker \"$@\"' _ \"${CAMPAIGN_ROOT}\" \"${BATCH_ID}\" </dev/null)\"",
             "echo \"Started container ${CONTAINER_NAME} (${CONTAINER_ID})\"",
             "podman logs -f \"${CONTAINER_ID}\" &",
             "LOGS_PID=\"$!\"",
@@ -2892,16 +2970,25 @@ def write_results_csv(root: Path, *, spec: CampaignSpec | None = None) -> Path:
         # A requeued batch has one manifest dir per attempt. Read them oldest
         # first so the newest attempt overwrites the earlier one, rather than
         # letting arbitrary glob order decide which attempt becomes the result.
-        for summary_file in sorted(
-            (root / "batches" / batch_id / "parallel").glob(
-                "*/parallel_summary.json"
-            ),
-            key=lambda p: (p.parent.name, _mtime_or_zero(p)),
-        ):
-            payload = read_json(summary_file)
-            for run in payload.get("runs", []) or []:
-                if isinstance(run, dict) and run.get("name"):
-                    measured[str(run["name"])] = run
+        #
+        # Within an attempt, prefer parallel_summary.json but fall back to
+        # parallel_status.json. The driver only writes the summary on a clean
+        # exit, so a batch killed at the wall clock has status but no summary --
+        # and reading only the summary drops the wall times of runs that had
+        # already finished. That is not hypothetical: it hid all 40 completed
+        # baseline measurements of ff-polopt2-ab-20260802, whose results.csv
+        # showed zero rows with sim_wall_seconds while parallel_status.json held
+        # every one of them.
+        attempts = sorted(
+            (p for p in (root / "batches" / batch_id / "parallel").glob("*") if p.is_dir()),
+            key=lambda p: (p.name, _mtime_or_zero(p)),
+        )
+        for attempt in attempts:
+            for candidate in ("parallel_status.json", "parallel_summary.json"):
+                payload = read_json(attempt / candidate)
+                for run in (payload.get("runs", []) or []) if isinstance(payload, dict) else []:
+                    if isinstance(run, dict) and run.get("name"):
+                        measured[str(run["name"])] = run
 
     live = _collect_task_progress(root, batches)
     task_batch = {

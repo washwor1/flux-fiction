@@ -7,6 +7,8 @@ from pathlib import Path
 import pytest
 
 from flux_fiction.ensemble.campaign import (
+    _child_attempt_runs,
+    _child_runs_all_complete,
     _collect_task_progress,
     _slurm_state_result,
     batches_path,
@@ -1425,3 +1427,75 @@ easy = "baseline"
     # run whatever build the worker environment last pointed at.
     with pytest.raises(EnsembleConfigError, match="no entry"):
         load_campaign_spec(spec_path)
+
+
+def _write_child_attempt(parallel_root: Path, attempt: str, filename: str, runs: list[dict]) -> None:
+    d = parallel_root / attempt
+    d.mkdir(parents=True, exist_ok=True)
+    (d / filename).write_text(json.dumps({"runs": runs}), encoding="utf-8")
+
+
+def test_teardown_kill_after_all_runs_finish_is_not_a_failure(tmp_path: Path):
+    """A signal that lands after every run completed is a teardown kill, not a failure.
+
+    Regression for the batches of ff-polopt2-ab-20260802 that finished all 8 runs
+    at 2000/2000, printed `Return code: 0`, and were still recorded `failed`.
+    """
+    parallel_root = tmp_path / "parallel"
+    _write_child_attempt(
+        parallel_root,
+        "20260802_204328_manifest",
+        "parallel_summary.json",
+        [
+            {"name": "t1", "state": "succeeded", "jobs_completed": 2000, "jobs_total": 2000},
+            {"name": "t2", "state": "succeeded", "jobs_completed": 2000, "jobs_total": 2000},
+        ],
+    )
+    assert _child_runs_all_complete(parallel_root) is True
+
+
+def test_walltime_kill_mid_run_is_still_a_failure(tmp_path: Path):
+    """A signal that lands while runs are in flight must stay a failure."""
+    parallel_root = tmp_path / "parallel"
+    _write_child_attempt(
+        parallel_root,
+        "20260802_204301_manifest",
+        "parallel_status.json",
+        [
+            {"name": "t1", "state": "succeeded", "jobs_completed": 2000, "jobs_total": 2000},
+            {"name": "t2", "state": "running", "jobs_completed": 215, "jobs_total": 2000},
+        ],
+    )
+    assert _child_runs_all_complete(parallel_root) is False
+
+
+def test_child_runs_fall_back_to_status_when_summary_is_absent(tmp_path: Path):
+    """The driver only writes parallel_summary.json on a clean exit.
+
+    A walltime-killed batch has status but no summary, and reading only the
+    summary drops the wall times of runs that had already finished -- which hid
+    all 40 completed baseline measurements of ff-polopt2-ab-20260802.
+    """
+    parallel_root = tmp_path / "parallel"
+    _write_child_attempt(
+        parallel_root,
+        "20260802_204301_manifest",
+        "parallel_status.json",
+        [{"name": "t1", "state": "succeeded", "jobs_completed": 2000,
+          "jobs_total": 2000, "wall_seconds": 846.0}],
+    )
+    runs = _child_attempt_runs(parallel_root)
+    assert runs is not None
+    assert runs[0]["wall_seconds"] == 846.0
+
+
+def test_summary_wins_over_status_within_an_attempt(tmp_path: Path):
+    """When both exist the summary is authoritative -- it is the final write."""
+    parallel_root = tmp_path / "parallel"
+    attempt = "20260802_204328_manifest"
+    _write_child_attempt(parallel_root, attempt, "parallel_status.json",
+                   [{"name": "t1", "state": "running", "jobs_completed": 10, "jobs_total": 2000}])
+    _write_child_attempt(parallel_root, attempt, "parallel_summary.json",
+                   [{"name": "t1", "state": "succeeded", "jobs_completed": 2000, "jobs_total": 2000}])
+    runs = _child_attempt_runs(parallel_root)
+    assert runs[0]["state"] == "succeeded"
