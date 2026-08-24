@@ -1,6 +1,7 @@
 import os
 import json
 import copy
+import sys
 from collections import Counter, deque
 
 import logging 
@@ -83,10 +84,12 @@ def _normalize_legacy_storage_status(resource_obj: dict) -> dict:
             if metadata.get("type") == "ssd":
                 metadata["status"] = 0
                 changed += 1
-        logger.warning(
-            "Normalized %d legacy SSD status values from 1/DOWN to 0/UP for Fluxion",
-            changed,
+        message = (
+            f"Normalized {changed} legacy SSD status values "
+            "from 1/DOWN to 0/UP for Fluxion"
         )
+        logger.warning(message)
+        print(message, file=sys.stderr)
         return normalized
 
     return resource_obj
@@ -441,12 +444,15 @@ def insert_resource_data(flux_handle, num_ranks, cores_per_rank,
         raise ValueError("Use only one of scheduling_path or scheduling_obj")
 
     if scheduling_path:
-        sched = load_json_file(scheduling_path)
+        sched = _normalize_legacy_storage_status(load_json_file(scheduling_path))
         out = attach_scheduling_graph(rlist_json, sched)
         if out is not None:
             rlist_json = out
     elif scheduling_obj:
-        out = attach_scheduling_graph(rlist_json, scheduling_obj)
+        out = attach_scheduling_graph(
+            rlist_json,
+            _normalize_legacy_storage_status(scheduling_obj),
+        )
         if out is not None:
             rlist_json = out
 
