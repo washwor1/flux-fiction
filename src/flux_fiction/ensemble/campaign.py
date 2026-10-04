@@ -1860,7 +1860,10 @@ def ensure_worker_script(root: Path, spec: CampaignSpec | None = None) -> Path:
             "  ${CONTAINER_ENV_ARGS[@]+\"${CONTAINER_ENV_ARGS[@]}\"} \\",
             "  -e MPLBACKEND=Agg \\",
             "  -e PYTHONPATH=\"${CONTAINER_PYTHONPATH}\" \\",
-            "  -e FLUX_FICTION_FAKETIME_DIR=/dev/shm \\",
+            # /dev/shm unless the caller overrides it (e.g. a node-local SSD
+            # under /scratch); the parallel runner derives every run's stamp
+            # file from this, so it is the only stamp-location knob.
+            "  -e FLUX_FICTION_FAKETIME_DIR=\"${FLUX_FICTION_FAKETIME_DIR:-/dev/shm}\" \\",
             "  -e FLUX_FICTION_FLUX_LAUNCH=\"${FLUX_FICTION_FLUX_LAUNCH:-}\" \\",
             "  -e FLUX_FICTION_FLUX_LAUNCH_CORES=\"${FLUX_FICTION_FLUX_LAUNCH_CORES:-}\" \\",
             "  -e FLUX_FICTION_SCRATCH=/scratch \\",

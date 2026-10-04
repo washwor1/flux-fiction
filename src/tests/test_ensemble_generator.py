@@ -400,7 +400,7 @@ def test_worker_script_is_text_batch_script(tmp_path: Path):
     assert "exited before writing" in text
     assert "RESULT_PATH=" in text
     assert "localhost/flux-fiction-dev:latest" in text
-    assert "FLUX_FICTION_FAKETIME_DIR=/dev/shm" in text
+    assert 'FLUX_FICTION_FAKETIME_DIR="${FLUX_FICTION_FAKETIME_DIR:-/dev/shm}"' in text
     assert "--shm-size=1g" in text
     assert "-m flux_fiction_ensemble worker" in text
     assert path.stat().st_mode & 0o111
