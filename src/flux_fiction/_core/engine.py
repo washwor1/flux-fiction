@@ -580,7 +580,9 @@ class Simulation(object):
         # Barrier: never probe, and never accumulate expectations, while a
         # submission is still in flight. _flush_pending_quiescent_expect() is
         # only reached from here, so this one call covers both.
-        self._drain_pending_submits()
+        with self.telemetry.span("simulation.drain_submits",
+                                 pending=len(self._pending_submits)):
+            self._drain_pending_submits()
         expect = self._flush_pending_quiescent_expect()
         probe_epoch = self.current_epoch
         bucket_time = float(self.current_time)
@@ -1320,7 +1322,8 @@ class Simulation(object):
             if self.time_step == 0:
                 print("")
             self.time_step += 1
-            self.write_status_snapshot(state="running")
+            with self.telemetry.span("simulation.status_snapshot"):
+                self.write_status_snapshot(state="running")
 
             expect = self.step_expect.get(self.current_time, {"submits": 0, "finishes": 0})
             self._bump_epoch_for_expect(expect)

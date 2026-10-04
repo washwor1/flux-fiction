@@ -138,6 +138,10 @@ def _build_run_command(prepared: PreparedParallelRun, max_concurrent: int = 1) -
         "on",
     }:
         cmd.append("--no-broker-log-file")
+    # OpenTelemetry profiling per replica (run_ff starts a non-faketime bridge
+    # and writes otel_spans.jsonl into the child run dir). Off unless set.
+    if os.environ.get("FLUX_FICTION_OTEL", "").lower() in {"1", "true", "yes", "on"}:
+        cmd.append("--otel")
     # Flux-native placement: the enclosing instance allocates a disjoint core
     # block per replica and the job shell binds to it. Empty prefix (plain
     # launch) unless FLUX_FICTION_FLUX_LAUNCH is set.
