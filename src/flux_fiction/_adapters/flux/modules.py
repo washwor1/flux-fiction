@@ -21,6 +21,31 @@ def load_missing_modules(flux_handle):
     pass
 
 
+def wait_for_scheduler_ready(flux_handle):
+    """
+    Block until sched-fluxion-qmanager has finished its startup handshakes.
+
+    qmanager calls flux_module_set_running() *before* its synchronous
+    handshakes with sched-fluxion-resource and the job-manager, so module.load
+    returns while it is still waiting for the resource graph and has not yet
+    told the job-manager it is ready. Allocation requests are held until then.
+    If the simulation is primed in that window, the first quiescence probe is
+    answered by an empty qmanager and the engine advances the clock past the
+    first jobs' submit time (seen as job 0 starting 72.478 s late in every
+    synthesized-graph gauss5 run).
+
+    stats-get is registered only after handshake() returns, so a reply to it
+    proves the handshakes completed.
+    """
+    try:
+        flux_handle.rpc("sched-fluxion-qmanager.stats-get").get()
+    except Exception as e:
+        raise RuntimeError(
+            f"sched-fluxion-qmanager did not become ready after load: {e}"
+        ) from e
+    logger.debug("sched-fluxion-qmanager completed its startup handshakes")
+
+
 def start_all_queues(flux_handle):
     """
     Ensure job-manager queues are accepting scheduling work.
@@ -347,6 +372,7 @@ def reload_modules(flux_handle, config_source=None, fluxion_variant=None):
 
         flux_handle.rpc("module.load", payload={"path": fluxion_qmanager_path,
                                                 "args": []}).get()
+        wait_for_scheduler_ready(flux_handle)
 
         _reload_job_ingest_config(flux_handle, config_payload, job_ingest_loaded)
 

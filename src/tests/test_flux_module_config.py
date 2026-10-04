@@ -127,3 +127,18 @@ def test_reload_modules_preserves_existing_validator_plugins():
             }
         },
     }
+
+
+def test_reload_modules_waits_for_qmanager_handshake_before_queues_start():
+    handle = _DummyHandle(_loaded_fluxion_modules())
+
+    modules.reload_modules(handle, None)
+
+    methods = [method for method, _payload, _nodeid in handle.calls]
+    qmanager_load = next(
+        i for i, (method, payload, _nodeid) in enumerate(handle.calls)
+        if method == "module.load" and "qmanager" in payload["path"]
+    )
+    ready = methods.index("sched-fluxion-qmanager.stats-get")
+    assert ready > qmanager_load
+    assert ready < methods.index("job-manager.queue-start")
