@@ -1502,6 +1502,123 @@ def test_summary_wins_over_status_within_an_attempt(tmp_path: Path):
     assert runs[0]["state"] == "succeeded"
 
 
+def _write_child_run(root: Path, batch_id: str, manifest: str, task_id: str, *,
+                     status_state: str, status_completed: int,
+                     summary_completed: int | None, jobs_total: int = 100) -> Path:
+    """A child run dir with its live status.json and, optionally, summary.json."""
+    child = (root / "batches" / batch_id / "parallel" / manifest / "runs"
+             / f"0001_{task_id}" / "child")
+    child.mkdir(parents=True, exist_ok=True)
+    write_json(child / "status.json", {
+        "state": status_state,
+        "jobs_completed": status_completed,
+        "jobs_submitted": status_completed,
+        "jobs_total": jobs_total,
+        "updated_at": "2026-01-21T10:18:17Z",
+    })
+    if summary_completed is not None:
+        write_json(child / "summary.json", {
+            "jobs_completed": summary_completed,
+            "jobs_total": jobs_total,
+            "makespan_seconds": 92729.89,
+        })
+    return child
+
+
+def test_killed_batch_does_not_mislabel_runs_that_actually_finished(tmp_path: Path):
+    """A complete run inside a killed batch reads `succeeded`, not `running`.
+
+    Regression for the mechanism behind the 2026-07-26 rabbit-threshold
+    campaign: 566 of 5,964 tasks carry jobs_completed == jobs_total == 10000
+    and state == "timeout". Reproduced 2026-09-01 by cancelling a batch mid
+    flight, which left 16 runs with 300/300 in their summaries while
+    parallel_status.json stayed frozen at "running" for all of them.
+    """
+    trace, config, scheduler = _write_base_files(tmp_path)
+    spec = load_campaign_spec(_write_spec(tmp_path, trace=trace, config=config, scheduler=scheduler))
+    root = initialize_campaign(spec)
+    batch = read_jsonl(batches_path(root))[0]
+    batch_id, task_id = batch["batch_id"], batch["task_ids"][0]
+    manifest = "20260901_202204_manifest"
+
+    # The simulation finished; the batch around it was then cancelled.
+    _write_child_run(root, batch_id, manifest, task_id,
+                     status_state="running", status_completed=100,
+                     summary_completed=100)
+    # The batch-level status froze mid-flight, exactly as a kill leaves it.
+    attempt = root / "batches" / batch_id / "parallel" / manifest
+    write_json(attempt / "parallel_status.json", {"runs": [
+        {"name": task_id, "state": "running", "jobs_completed": 100, "jobs_total": 100},
+    ]})
+    write_json(root / "batches" / batch_id / "batch_result.json", {
+        "batch_id": batch_id, "state": "failed", "return_code": 1,
+        "failure_reason": "Flux job f1 ended with state=INACTIVE result=CANCELED; "
+                          "worker did not write batch_result.json",
+    })
+
+    progress = _collect_task_progress(root, [batch])
+    assert progress[task_id]["child_complete"] is True
+    assert progress[task_id]["status"] == "succeeded"
+
+    rows = {r["task_id"]: r for r in csv.DictReader(
+        write_results_csv(root, spec=spec).open(encoding="utf-8"))}
+    assert rows[task_id]["state"] == "succeeded"
+    # The batch record itself stays honest: the batch really did fail.
+    assert read_json(root / "batches" / batch_id / "batch_result.json")["state"] == "failed"
+
+
+def test_truncated_run_keeps_its_timeout_label(tmp_path: Path):
+    """An early finalize writes summary.json too. It must NOT read as success.
+
+    This is the guard on the fix above: "how far did it get before the wall"
+    is the useful half of a timeout, and flattening it into `succeeded` would
+    silently promote partial data to complete data.
+    """
+    trace, config, scheduler = _write_base_files(tmp_path)
+    spec = load_campaign_spec(_write_spec(tmp_path, trace=trace, config=config, scheduler=scheduler))
+    root = initialize_campaign(spec)
+    batch = read_jsonl(batches_path(root))[0]
+    batch_id, task_id = batch["batch_id"], batch["task_ids"][0]
+    manifest = "20260901_202204_manifest"
+
+    # Walltime kill: the run finalized early with 37 of 100 jobs done.
+    _write_child_run(root, batch_id, manifest, task_id,
+                     status_state="running", status_completed=37,
+                     summary_completed=37)
+    write_json(root / "batches" / batch_id / "batch_result.json", {
+        "batch_id": batch_id, "state": "failed", "return_code": -9,
+        "terminated_by_signal": 9,
+        "failure_reason": "flux-fiction-run-parallel was terminated by signal 9 "
+                          "(walltime kill or cancel)",
+    })
+
+    progress = _collect_task_progress(root, [batch])
+    assert progress[task_id]["child_complete"] is False
+    assert progress[task_id]["status"] == "timeout"
+
+    rows = {r["task_id"]: r for r in csv.DictReader(
+        write_results_csv(root, spec=spec).open(encoding="utf-8"))}
+    assert rows[task_id]["state"] == "timeout"
+    assert rows[task_id]["jobs_completed"] == "37"
+
+
+def test_run_with_no_summary_is_not_promoted(tmp_path: Path):
+    """No summary.json at all means the run never finalized. Stays non-success."""
+    trace, config, scheduler = _write_base_files(tmp_path)
+    spec = load_campaign_spec(_write_spec(tmp_path, trace=trace, config=config, scheduler=scheduler))
+    root = initialize_campaign(spec)
+    batch = read_jsonl(batches_path(root))[0]
+    batch_id, task_id = batch["batch_id"], batch["task_ids"][0]
+
+    _write_child_run(root, batch_id, "20260901_202204_manifest", task_id,
+                     status_state="running", status_completed=100,
+                     summary_completed=None)
+
+    progress = _collect_task_progress(root, [batch])
+    assert progress[task_id]["child_complete"] is False
+    assert progress[task_id]["status"] != "succeeded"
+
+
 def test_example_campaign_is_self_contained(tmp_path: Path):
     spec_path = tmp_path / "example" / "campaign.toml"
     copy_example_spec(spec_path)

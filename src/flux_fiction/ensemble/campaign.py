@@ -2820,6 +2820,27 @@ def _collect_task_progress(
             # simulated job. Harvest the child summary so a truncated run still
             # reports its metrics.
             summary = read_json(status_file.parent / "summary.json")
+            # The child's own summary is the only artifact that knows whether
+            # the SIMULATION finished, as opposed to whether the batch job
+            # around it survived. Everything consulted above -- the frozen
+            # child status.json, the batch result, the Flux job result --
+            # describes the container, and a run that completed every job
+            # inside a batch that was then killed is a finished run whose
+            # container died afterwards.
+            #
+            # Not hypothetical: 566 of the 5,964 tasks in the 2026-07-26
+            # rabbit-threshold campaign carry jobs_completed == jobs_total ==
+            # 10000 and state == "timeout", which is why that campaign is
+            # remembered as returning 96 results instead of 662.
+            #
+            # An early finalize (walltime budget) also writes summary.json, so
+            # its presence proves nothing. The EQUALITY is what separates a
+            # complete run from a truncated one, and truncated runs keep their
+            # timeout label -- that distinction is the useful part of the
+            # signal and this must not flatten it.
+            child_complete = _summary_reports_complete(summary)
+            if child_complete:
+                status = "succeeded"
             progress[task_id] = {
                 "task_id": task_id,
                 "batch_id": batch_id,
@@ -2828,6 +2849,7 @@ def _collect_task_progress(
                 "jobs_total": int(data.get("jobs_total") or 0),
                 "child_state": child_state,
                 "status": status,
+                "child_complete": child_complete,
                 "updated_at": data.get("updated_at"),
                 "_attempt_key": attempt_key,
                 "makespan_seconds": summary.get("makespan_seconds"),
@@ -2931,6 +2953,40 @@ def _first_present(*values: Any) -> Any:
     return ""
 
 
+def _summary_reports_complete(summary: dict[str, Any] | None) -> bool:
+    """True when a child's own summary.json says every job finished.
+
+    The equality is the whole test. An early finalize writes summary.json too,
+    with jobs_completed < jobs_total, and those runs must keep their timeout
+    label -- "how far did it get before the wall" is a useful signal and this
+    must not flatten it into success.
+    """
+    if not isinstance(summary, dict):
+        return False
+    try:
+        completed = int(summary.get("jobs_completed"))
+        total = int(summary.get("jobs_total"))
+    except (TypeError, ValueError):
+        return False
+    return total > 0 and completed == total
+
+
+def _task_state(run: dict[str, Any], progress: dict[str, Any]) -> str:
+    """The state to report for one task, artifacts first.
+
+    `run` comes from the batch-level parallel_status/summary, which a killed
+    batch freezes mid-flight: every run in it reads "running" forever. The
+    child's summary outranks it, because it is written by the simulation
+    itself rather than by the machinery around it.
+
+    Reproduced 2026-09-01 on ff-rabbit-rerun-trial-20260901: cancelling a batch
+    left 16 runs with 300/300 in their summaries and "running" in results.csv.
+    """
+    if progress.get("child_complete"):
+        return "succeeded"
+    return run.get("state") or progress.get("status") or "queued"
+
+
 def write_results_csv(root: Path, *, spec: CampaignSpec | None = None) -> Path:
     """Join every task's grid factors to its measured metrics in one tidy CSV.
 
@@ -2992,7 +3048,7 @@ def write_results_csv(root: Path, *, spec: CampaignSpec | None = None) -> Path:
                 {
                     "task_id": task_id,
                     "batch_id": task_batch.get(task_id, ""),
-                    "state": run.get("state") or progress.get("status") or "queued",
+                    "state": _task_state(run, progress),
                     "queue_policy": task.get("queue_policy", ""),
                     "match_policy": task.get("match_policy", ""),
                     "fluxion_variant": task.get("fluxion_variant") or "",
