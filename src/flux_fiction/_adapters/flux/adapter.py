@@ -13,6 +13,10 @@ from . import watchers
 
 logger = logging.getLogger(__name__)
 
+# How long a restored run waits for the job-manager to hand back every job
+# that was running at the checkpoint before giving up.
+REATTACH_TIMEOUT_SECONDS = 120.0
+
 
 def _coerce_bool(value):
     if isinstance(value, bool):
@@ -51,6 +55,8 @@ class FluxAdapter:
         self.consumer = None
         self._pending_start_msgs: dict[int, object] = {}
         self._pending_complete_msgs: dict[int, object] = {}
+        self._module_paths: dict[str, str] | None = None
+        self._reattach_timer = None
 
     def open(self, simulation) -> None:
         if self._handle is None:
@@ -124,15 +130,110 @@ class FluxAdapter:
     def describe_resources(self, cfg):
         return resources.describe_resource_config(cfg)
     
-    def reload_scheduler(self, cfg):
+    def reload_scheduler(self, cfg, fallback_paths=None):
         ''''''
-        modules.reload_modules(
+        self._module_paths = modules.reload_modules(
             self._handle,
             cfg.config_json,
             fluxion_variant=getattr(cfg, "fluxion_variant", None),
+            fallback_paths=fallback_paths,
         )
 
         modules.load_missing_modules(self._handle)
+
+    def pending_start_jobids(self) -> list[int]:
+        return list(self._pending_start_msgs)
+
+    def checkpoint_backend_state(self) -> dict:
+        # Jobs, allocations and resources are persisted by the instance itself
+        # (statedir); only record what is needed to bring the scheduler back.
+        return {"module_paths": self._module_paths}
+
+    def restore_backend(self, cfg, restore_state, *, on_ready: Callable[[], None]) -> None:
+        '''
+        Bring a restarted instance back under simulator control.
+
+        The instance was restarted from the checkpointed statedir with no
+        scheduler and no exec service, so its job-manager holds every job but
+        nothing has been scheduled or reattached yet. Order matters:
+
+          1. reset emu-jobtap, crediting the jobs that are already running and
+             subscribing to every recovered job (they were created before the
+             plugin was loaded, so job.new never subscribed them);
+          2. register sim-exec and arm its watchers, so reattach requests have
+             a handler;
+          3. load Fluxion, which rebuilds running allocations from their saved
+             R (qmanager hello) and receives the pending queue;
+          4. exec-hello, after which the job-manager sends one reattach
+             request per running job.
+
+        on_ready runs once every running job has been reattached.
+        '''
+        running = [int(j) for j in restore_state.get("running_jobids") or []]
+        pending = [int(j) for j in restore_state.get("pending_jobids") or []]
+        expected = set(running)
+        reattached: set[int] = set()
+        ready_called = False
+
+        def _ready():
+            nonlocal ready_called
+            if ready_called:
+                return
+            ready_called = True
+            if self._reattach_timer is not None:
+                self._reattach_timer.stop()
+                self._reattach_timer = None
+            logger.info("Reattached %d running job(s) after restore", len(reattached))
+            on_ready()
+
+        def _on_reattach(jobid):
+            if jobid not in expected:
+                self.simulation._fail(
+                    "Restored instance reattached job {} which was not running at the checkpoint"
+                    .format(jobid)
+                )
+                return
+            reattached.add(jobid)
+            if reattached == expected:
+                _ready()
+
+        def _on_timeout(handle, watcher, revents, args):
+            missing = sorted(expected - reattached)
+            self.simulation._fail(
+                "Restored instance did not reattach {} of {} running job(s) within {:.0f}s: {}"
+                .format(len(missing), len(expected), REATTACH_TIMEOUT_SECONDS, missing[:20])
+            )
+
+        modules.reset_jobtap_plugin(
+            self._handle,
+            keep_timestep=False,
+            batch_job_starts=self.simulation.batch_job_starts,
+            log_enabled=self.simulation.jobtap_logging,
+            otel_enabled=self.simulation.otel_enabled,
+            otel_socket=self.simulation.otel_bridge_socket,
+            otel_service_name=self.simulation.otel_service_name + "-jobtap",
+            carried_running=len(running),
+            subscribe=sorted(expected | set(pending)),
+        )
+        self._watchers, self._services = watchers.setup_watchers(
+            self._handle,
+            self.simulation.start_job,
+            self._pending_start_msgs,
+            self._pending_complete_msgs,
+            batch_job_starts=self.simulation.batch_job_starts,
+            on_reattach=_on_reattach,
+        )
+        self.register_job_tracking()
+        saved_paths = (restore_state.get("backend") or {}).get("module_paths")
+        self.reload_scheduler(cfg, fallback_paths=saved_paths)
+        self.register_exec_service()
+        if expected:
+            self._reattach_timer = self._handle.timer_watcher_create(
+                REATTACH_TIMEOUT_SECONDS, _on_timeout
+            )
+            self._reattach_timer.start()
+        else:
+            _ready()
     
     def register_exec_service(self):
         ''''''

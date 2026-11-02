@@ -22,6 +22,8 @@ import time
 from typing import Any, Iterator
 
 from flux_fiction.api.status import RunStatusWriter, utcnow_iso
+from flux_fiction.cli import checkpoint_store
+from flux_fiction._core.checkpoint import CHECKPOINT_EXIT_CODE
 from flux_fiction.faketime_paths import default_stampfile_path
 from flux_fiction.telemetry import TelemetryClient
 
@@ -176,6 +178,7 @@ def _watch_walltime_budget(
     output_dir: Path,
     budget_seconds: float,
     reserve_seconds: float,
+    sentinel_name: str = ".finalize_now",
 ) -> None:
     """Ask the simulation to finalize before the allocation expires.
 
@@ -189,7 +192,8 @@ def _watch_walltime_budget(
     arrives mid-write; the outputs are the whole point of finishing early.
     """
     trigger_at = time.time() + max(0.0, budget_seconds - reserve_seconds)
-    sentinel = output_dir / ".finalize_now"
+    # A checkpointing run asks for a checkpoint instead (.checkpoint_now).
+    sentinel = output_dir / sentinel_name
     while proc.poll() is None:
         remaining = trigger_at - time.time()
         if remaining <= 0:
@@ -588,7 +592,12 @@ def prepare_config(
     cfg["summary_file"] = str(run_root / "summary.json")
     cfg["source_config_file"] = str(source_config)
     if config_overrides:
-        cfg.update(config_overrides)
+        for key, value in config_overrides.items():
+            # None removes a key carried over from a restored run's config.
+            if value is None:
+                cfg.pop(key, None)
+            else:
+                cfg[key] = value
     if otel:
         cfg.update(otel)
 
@@ -791,7 +800,11 @@ def main() -> int:
     parser = argparse.ArgumentParser(
         description="Run Flux Fiction in a fresh Flux instance with jobtap and libfaketime configured."
     )
-    parser.add_argument("config_file", help="Flux Fiction TOML config file.")
+    parser.add_argument(
+        "config_file",
+        nargs="?",
+        help="Flux Fiction TOML config file (omit with --restore).",
+    )
     parser.add_argument("--tag", help="Optional suffix for the timestamped run directory.")
     parser.add_argument(
         "--run-dir",
@@ -902,12 +915,45 @@ def main() -> int:
         default="flux-fiction",
         help="Base OpenTelemetry service name written by the profiling bridge.",
     )
+    parser.add_argument(
+        "--checkpoint-dir",
+        default=None,
+        help=(
+            "Enable checkpointing: when the run stops at a checkpoint, store a "
+            "resumable generation here (gen-NNNN, LATEST) and exit with status "
+            f"{CHECKPOINT_EXIT_CODE}. A walltime budget then triggers a checkpoint "
+            "instead of an early finalize."
+        ),
+    )
+    parser.add_argument(
+        "--checkpoint-after-completions",
+        type=int,
+        default=0,
+        help="With --checkpoint-dir, checkpoint once this many jobs have completed.",
+    )
+    parser.add_argument(
+        "--restore",
+        default=None,
+        help=(
+            "Resume from a checkpoint generation directory (or a --checkpoint-dir, "
+            "meaning its LATEST generation) in a new run directory."
+        ),
+    )
     args = parser.parse_args()
     if args.otel:
         ensure_otel_dependencies()
+    if bool(args.restore) == bool(args.config_file):
+        parser.error("give exactly one of config_file or --restore")
+    if args.checkpoint_after_completions and not args.checkpoint_dir:
+        parser.error("--checkpoint-after-completions requires --checkpoint-dir")
 
     ff_root = repo_root()
-    source_config = remap_path(args.config_file)
+    restore_gen = None
+    if args.restore:
+        restore_gen = checkpoint_store.open_generation(remap_path(args.restore))
+        source_config = restore_gen.config_file
+    else:
+        source_config = remap_path(args.config_file)
     if not source_config.exists():
         raise FileNotFoundError(f"Config TOML not found: {source_config}")
 
@@ -941,6 +987,21 @@ def main() -> int:
     config_overrides = {}
     if args.submit_novalidate is not None:
         config_overrides["submit_novalidate"] = args.submit_novalidate
+    checkpoint_dir = remap_path(args.checkpoint_dir, for_output=True) if args.checkpoint_dir else None
+    checkpoint_state_file = run_root / "checkpoint_state.json"
+    config_overrides["checkpoint_file"] = str(checkpoint_state_file) if checkpoint_dir else None
+    config_overrides["checkpoint_after_completions"] = (
+        int(args.checkpoint_after_completions) if checkpoint_dir else None
+    )
+    config_overrides["restore_file"] = None
+    if restore_gen is not None:
+        restore_state_file = run_root / "restore_state.json"
+        shutil.copyfile(restore_gen.state_file, restore_state_file)
+        config_overrides["restore_file"] = str(restore_state_file)
+        status.update(
+            restored_from=str(restore_gen.path),
+            restored_generation=restore_gen.manifest["generation"],
+        )
     generated_config, trace_path, output_dir = prepare_config(
         source_config,
         run_root,
@@ -985,6 +1046,11 @@ def main() -> int:
 
         first_submit = first_submit_epoch(trace_path)
         initial_fake_time = first_submit - max(0.0, float(args.faketime_start_lead))
+        if restore_gen is not None:
+            # Resume the fake clock where the checkpointed instance stopped
+            # reading it; never earlier, since everything in the recovered KVS
+            # (job ids included) was stamped before that.
+            initial_fake_time = restore_gen.initial_fake_time
         if not args.dry_run and args.faketime_mode == "legacy":
             assert stamp_path is not None
             stamp_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1006,6 +1072,21 @@ def main() -> int:
     cmd = [flux_exe, "start"]
     if not args.no_broker_log_file:
         cmd.append(f"--setattr=log-filename={broker_log}")
+    # A checkpointable instance keeps its statedir on node-local storage; it is
+    # copied into the checkpoint directory only after the broker has exited.
+    local_statedir = None
+    checkpoint_env: dict[str, str] = {}
+    if (checkpoint_dir is not None or restore_gen is not None) and not args.dry_run:
+        local_statedir = checkpoint_store.make_local_statedir()
+        cmd.append(f"--setattr=statedir={local_statedir}")
+        checkpoint_env.update(checkpoint_store.CHECKPOINT_BROKER_ENV)
+        if restore_gen is not None:
+            checkpoint_store.extract_statedir(restore_gen, local_statedir)
+            restart_conf = checkpoint_store.write_restart_broker_config(run_root / "restart-broker-conf")
+            cmd.append(f"--config-path={restart_conf}")
+            checkpoint_env.update(checkpoint_store.RESTART_BROKER_ENV)
+        env.update(checkpoint_env)
+        print(f"Flux statedir:    {local_statedir}")
     cmd.extend(
         [
             f"--setattr=log-level={args.broker_log_level}",
@@ -1048,6 +1129,7 @@ def main() -> int:
             "FLUX_FICTION_PATH_MAP": env["FLUX_FICTION_PATH_MAP"],
             **dftracer_env,
             **faketime_env,
+            **checkpoint_env,
         },
         extra_lines=bridge_extra_lines,
     )
@@ -1179,6 +1261,9 @@ def main() -> int:
                     threading.Thread(
                         target=_watch_walltime_budget,
                         args=(proc, run_root / "output", budget, reserve),
+                        kwargs={"sentinel_name": (
+                            ".checkpoint_now" if checkpoint_dir is not None else ".finalize_now"
+                        )},
                         daemon=True,
                     ).start()
                 assert proc.stdout is not None
@@ -1265,7 +1350,9 @@ def main() -> int:
         for path in emergency_files:
             if path.exists():
                 print(f"  {path}", file=sys.stderr)
-    if proc.returncode != 0:
+    if proc.returncode == CHECKPOINT_EXIT_CODE and checkpoint_dir is not None:
+        print(f"Run stopped at a checkpoint (rc={proc.returncode}).")
+    elif proc.returncode != 0:
         print(f"Run failed with rc={proc.returncode}. See {stdout_log}", file=sys.stderr)
     if broker_errors:
         print(
@@ -1281,8 +1368,34 @@ def main() -> int:
             print(f"  ... {len(broker_errors) - 5} more matching lines", file=sys.stderr)
 
     rc = proc.returncode or (1 if broker_errors or interrupted_reason is not None else 0)
+    final_state = "succeeded" if rc == 0 else "failed"
+    if (
+        rc == CHECKPOINT_EXIT_CODE
+        and checkpoint_dir is not None
+        and local_statedir is not None
+        and failure_reason is None
+    ):
+        try:
+            status.update(state="checkpointing")
+            gen = checkpoint_store.package_generation(
+                checkpoint_dir,
+                state_file=checkpoint_state_file,
+                statedir=local_statedir,
+                generated_config=generated_config,
+                run_root=run_root,
+            )
+        except Exception as exc:
+            failure_reason = f"could not store checkpoint: {type(exc).__name__}: {exc}"
+            print(f"Run failed: {failure_reason}", file=sys.stderr)
+            rc = 1
+        else:
+            final_state = "checkpointed"
+            status.update(checkpoint_generation=str(gen.path))
+            print(f"Checkpoint:       {gen.path}")
+    if local_statedir is not None:
+        shutil.rmtree(local_statedir, ignore_errors=True)
     status.update(
-        state="succeeded" if rc == 0 else "failed",
+        state=final_state,
         finished_at=utcnow_iso(),
         return_code=rc,
         failure_reason=failure_reason,

@@ -106,18 +106,29 @@ def reset_jobtap_plugin(
     otel_enabled=False,
     otel_socket=None,
     otel_service_name="flux-fiction-jobtap",
+    carried_running=0,
+    subscribe=None,
 ):
+    # carried_running and subscribe are only used when resuming a restarted
+    # instance: jobs that were already running count as started, and jobs the
+    # restarted job-manager created before the plugin was loaded are
+    # subscribed so their alloc/start events are counted.
+    payload = {
+        "keep_timestep": keep_timestep,
+        "batch_job_starts": batch_job_starts,
+        "log_enabled": log_enabled,
+        "otel_enabled": otel_enabled,
+        "otel_socket": otel_socket,
+        "otel_service_name": otel_service_name,
+    }
+    if carried_running:
+        payload["carried_running"] = int(carried_running)
+    if subscribe:
+        payload["subscribe"] = [int(jobid) for jobid in subscribe]
     try:
         flux_handle.rpc(
             "job-manager.emu-jobtap.reset",
-            payload={
-                "keep_timestep": keep_timestep,
-                "batch_job_starts": batch_job_starts,
-                "log_enabled": log_enabled,
-                "otel_enabled": otel_enabled,
-                "otel_socket": otel_socket,
-                "otel_service_name": otel_service_name,
-            },
+            payload=payload,
         ).get()
         logger.debug(
             "Reset emu-jobtap probe to defaults (batch_job_starts=%s, log_enabled=%s, otel_enabled=%s)",
@@ -126,6 +137,10 @@ def reset_jobtap_plugin(
             otel_enabled,
         )
     except Exception as e:
+        if carried_running or subscribe:
+            # A restore that cannot account for its recovered jobs would hang
+            # at the first quiescence barrier; fail now instead.
+            raise RuntimeError(f"Failed to reset emu-jobtap for restore: {e}") from e
         logger.error(f"Failed to reset emu-jobtap probe: {e}")
 
 import copy
@@ -240,7 +255,7 @@ def _reload_job_ingest_config(flux_handle, config_payload, job_ingest_loaded):
     flux_handle.rpc("job-ingest.config-reload", payload=config_payload).get()
 
 
-def reload_modules(flux_handle, config_source=None, fluxion_variant=None):
+def reload_modules(flux_handle, config_source=None, fluxion_variant=None, fallback_paths=None):
     """
     Reload resource + scheduler modules in the order:
 
@@ -251,6 +266,13 @@ def reload_modules(flux_handle, config_source=None, fluxion_variant=None):
       - dict from `flux config get`
       - path to a JSON file containing that object
       - None (load a minimal config enabling ingest feasibility validation)
+
+    Modules that are not loaded are not removed: a restarted instance is
+    brought up with no scheduler at all. fallback_paths supplies module paths
+    (as returned by a previous call) for modules that are neither loaded nor
+    selected through the environment or fluxion_variant.
+
+    Returns the module paths that were loaded.
     """
     sched_module = "sched-simple"
     sched_simple_path = None
@@ -259,6 +281,7 @@ def reload_modules(flux_handle, config_source=None, fluxion_variant=None):
     fluxion_resource_path = None
     feasibility_module_path = None
     job_ingest_loaded = False
+    loaded_names = set()
 
     # config_source = "/home/j/Desktop/flux/sc25_poster/flux-fiction/experiment_data/ff_traces/experiment_scheduler_easy_resdepth32_20260330_165549/flux_config.json"
 
@@ -267,6 +290,7 @@ def reload_modules(flux_handle, config_source=None, fluxion_variant=None):
 
         services = module.get("services", [])
         name = module.get("name", "")
+        loaded_names.add(name)
 
         if "sched-simple" in services:
             sched_module = module["name"]
@@ -306,6 +330,23 @@ def reload_modules(flux_handle, config_source=None, fluxion_variant=None):
         or _env_path("FLUX_FICTION_FLUXION_QMANAGER_MODULE")
         or fluxion_qmanager_path
     )
+    fallback_paths = fallback_paths or {}
+    resource_module_path = resource_module_path or fallback_paths.get("resource")
+    fluxion_resource_path = fluxion_resource_path or fallback_paths.get("fluxion_resource")
+    feasibility_module_path = feasibility_module_path or fallback_paths.get("feasibility")
+    fluxion_qmanager_path = fluxion_qmanager_path or fallback_paths.get("qmanager")
+    missing = [
+        label for label, path in (
+            ("sched-fluxion-resource", fluxion_resource_path),
+            ("sched-fluxion-feasibility", feasibility_module_path),
+            ("sched-fluxion-qmanager", fluxion_qmanager_path),
+        ) if not path
+    ]
+    if missing:
+        raise RuntimeError(
+            "Unable to resolve module path(s) for {} (not loaded and not set via "
+            "FLUX_FICTION_FLUXION_*_MODULE or fluxion_variant)".format(", ".join(missing))
+        )
 
     logger.debug("Reloading '%s' and 'resource' modules", sched_module)
 
@@ -316,29 +357,19 @@ def reload_modules(flux_handle, config_source=None, fluxion_variant=None):
 
     # 1. Unload scheduler + resource
     try:
-        if sched_module == "sched-simple":
+        for name in (
+            "sched-simple",
+            "sched-fluxion-qmanager",
+            "sched-fluxion-feasibility",
+            "sched-fluxion-resource",
+            "resource",
+        ):
+            if name not in loaded_names:
+                continue
             flux_handle.rpc(
                 "module.remove",
-                payload={"name": "sched-simple"},
+                payload={"name": name},
             ).get()
-        else:
-            flux_handle.rpc(
-                "module.remove",
-                payload={"name": "sched-fluxion-qmanager"},
-            ).get()
-            flux_handle.rpc(
-                "module.remove",
-                payload={"name": "sched-fluxion-feasibility"},
-            ).get()
-            flux_handle.rpc(
-                "module.remove",
-                payload={"name": "sched-fluxion-resource"},
-            ).get()
-
-        flux_handle.rpc(
-            "module.remove",
-            payload={"name": "resource"},
-        ).get()
 
     except Exception as e:
         logger.error("Error removing modules: %s", e)
@@ -381,3 +412,10 @@ def reload_modules(flux_handle, config_source=None, fluxion_variant=None):
     except Exception as e:
         logger.error("Error loading modules: %s", e)
         raise
+
+    return {
+        "resource": resource_module_path,
+        "fluxion_resource": fluxion_resource_path,
+        "feasibility": feasibility_module_path,
+        "qmanager": fluxion_qmanager_path,
+    }

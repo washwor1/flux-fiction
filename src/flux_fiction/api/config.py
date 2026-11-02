@@ -32,6 +32,8 @@ _PATH_FIELDS = {
     "status_file": True,
     "summary_file": True,
     "faketime_timestamp_file": True,
+    "checkpoint_file": True,
+    "restore_file": False,
     "otel_bridge_socket": True,
     "otel_summary_file": True,
     "otel_spans_file": True,
@@ -190,6 +192,16 @@ class ExperimentConfig:
 
     output_dir: Optional[str] = "./"
 
+    # Checkpoint/restart. checkpoint_file enables checkpointing: the run stops
+    # at a quiescent boundary and writes its state there, once
+    # checkpoint_after_completions jobs have completed (0 = only on request
+    # through the output_dir/.checkpoint_now sentinel). restore_file resumes a
+    # run from such a state file; the Flux instance must be the checkpointed
+    # one, restarted (flux-fiction-run --restore does both).
+    checkpoint_file: Optional[str] = None
+    checkpoint_after_completions: int = 0
+    restore_file: Optional[str] = None
+
     faketime_timestamp_file: Optional[str] = None
     faketime_initial_epoch: float = 0.0
     faketime_seed: bool = True
@@ -262,6 +274,10 @@ class ExperimentConfigModel(BaseModel):
     make_plots: bool = True
 
     output_dir: Optional[str] = "./"
+
+    checkpoint_file: Optional[str] = None
+    checkpoint_after_completions: int = Field(default=0, ge=0)
+    restore_file: Optional[str] = None
 
     faketime_timestamp_file: Optional[str] = None
     faketime_initial_epoch: float = 0.0

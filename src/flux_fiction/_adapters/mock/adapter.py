@@ -359,6 +359,36 @@ class MockAdapter:
             self._free_nodes += job.nnodes
         self._completed_jobids.add(jobid)
 
+    def pending_start_jobids(self) -> list[int]:
+        # Mock starts are delivered synchronously inside the quiescence step.
+        return []
+
+    def checkpoint_backend_state(self) -> dict[str, Any]:
+        """Stand-in for what a real instance persists in its KVS."""
+        return {
+            "next_jobid": max(self._submit_order, default=0) + 1,
+            "free_nodes": self._free_nodes,
+            "total_nodes": self._total_nodes,
+            "submit_order": list(self._submit_order),
+            "queue": [vars(job) for job in self._queue],
+            "running": [vars(job) for job in self._running.values()],
+            "nodelists": {str(k): v for k, v in self._nodelists.items()},
+            "completed": sorted(self._completed_jobids),
+        }
+
+    def restore_backend(self, cfg, restore_state, *, on_ready: Callable[[], None]) -> None:
+        state = restore_state.get("backend") or {}
+        self._resource_desc = self.describe_resources(cfg)
+        self._total_nodes = int(state["total_nodes"])
+        self._free_nodes = int(state["free_nodes"])
+        self._jobid_gen = itertools.count(int(state["next_jobid"]))
+        self._submit_order = list(state["submit_order"])
+        self._queue = deque(_QueuedJob(**job) for job in state["queue"])
+        self._running = {job["jobid"]: _QueuedJob(**job) for job in state["running"]}
+        self._nodelists = {int(k): v for k, v in state["nodelists"].items()}
+        self._completed_jobids = set(state["completed"])
+        self._deferred.append(on_ready)
+
     def _resolve_quiescence_step(self) -> MockQuiescenceStep:
         if self._queued_quiescence_steps:
             return self._queued_quiescence_steps.popleft()

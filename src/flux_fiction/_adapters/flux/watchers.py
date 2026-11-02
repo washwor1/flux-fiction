@@ -11,6 +11,18 @@ def sim_exec_start_cb(flux_handle, watcher, msg, args=None):
         payload = msg.payload
         jobid = payload["id"]
 
+        if payload.get("reattach"):
+            # A restarted job-manager hands back a job that was already
+            # running when the instance was checkpointed. It must not count as
+            # a new start: keep the request for the eventual finish/release and
+            # answer "reattached" (the job-manager rejects a "start" here).
+            ctx["pending_complete_msgs"][jobid] = msg
+            flux_handle.respond(msg, payload={"id": jobid, "type": "reattached", "data": {}})
+            on_reattach = ctx.get("on_reattach")
+            if on_reattach is not None:
+                on_reattach(jobid)
+            return
+
         ctx["pending_start_msgs"][jobid] = msg
 
         if ctx.get("batch_job_starts", True):
@@ -63,7 +75,7 @@ def service_remove(f, name):
     future = f.service_unregister(name)
     return f.future_get(future, None)
 
-def setup_watchers(flux_handle, start_job_cb: Callable, pending_start_msgs: dict, pending_complete_msgs: dict, batch_job_starts: bool = True):
+def setup_watchers(flux_handle, start_job_cb: Callable, pending_start_msgs: dict, pending_complete_msgs: dict, batch_job_starts: bool = True, on_reattach: Callable | None = None):
     '''
     Adds all appropriate watchers to the emulator
 
@@ -77,6 +89,7 @@ def setup_watchers(flux_handle, start_job_cb: Callable, pending_start_msgs: dict
         "pending_complete_msgs": pending_complete_msgs,
         "start_job": start_job_cb,
         "batch_job_starts": bool(batch_job_starts),
+        "on_reattach": on_reattach,
     }
 
     for type_mask, topic, cb in [

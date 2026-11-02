@@ -108,6 +108,7 @@ class Job(object):
         self.rabbit_storage_emit_dw = False
         self.rabbit_storage_name = "rabbit"
         self.raw_jobspec_override = None
+        self.start_seq = None      # order among started jobs (checkpoint restore)
 
         self.gap = float(gap or 0.0)
         self.end_latency = float(end_latency or 0.0)

@@ -7,6 +7,7 @@ import os
 from flux_fiction.api import client
 from flux_fiction.api.config import from_toml
 from flux_fiction.api.status import RunStatusWriter
+from flux_fiction._core.checkpoint import CHECKPOINT_EXIT_CODE
 
 logger = logging.getLogger(__name__)
 
@@ -142,6 +143,9 @@ def main(argv: list[str] | None = None) -> int:
     if not result.ok:
         logger.critical("Run failed: %s", result.message)
         return 1
+    if getattr(result, "checkpointed", False):
+        logger.warning(result.message)
+        return CHECKPOINT_EXIT_CODE
 
     logger.info(result.message)
     return 0

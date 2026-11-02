@@ -30,6 +30,24 @@ class SimpleExec(object):
             end=-1,
         )
 
+    def to_state(self):
+        return {
+            "num_free_nodes": self.num_free_nodes,
+            "used_core_hours": self.used_core_hours,
+            "used_gpu_hours": self.used_gpu_hours,
+            "makespan_beginning": self.makespan.beginning,
+            "makespan_end": self.makespan.end,
+        }
+
+    def load_state(self, state):
+        self.num_free_nodes = state["num_free_nodes"]
+        self.used_core_hours = state["used_core_hours"]
+        self.used_gpu_hours = state["used_gpu_hours"]
+        self.makespan = Makespan(
+            beginning=float(state["makespan_beginning"]),
+            end=float(state["makespan_end"]),
+        )
+
     def update_makespan(self, current_time):
         '''
         Helper function that allows you to modify the makespan

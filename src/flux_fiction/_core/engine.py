@@ -3,6 +3,7 @@ from __future__ import annotations
 import flux_fiction._core.errors as errors
 import flux_fiction._core.models as models
 import flux_fiction._core.events as events
+import flux_fiction._core.checkpoint as checkpoint
 from flux_fiction._core.faketime import FakeTimeController
 
 from flux_fiction._adapters.base import Adapter 
@@ -51,6 +52,8 @@ FLUXION_MODULE_STATS = (
 class EngineResult:
     ok: bool
     message: str = ""
+    # The run stopped at a checkpoint and can be resumed; outputs are not final.
+    checkpointed: bool = False
 
 
 def _write_summary_file(path: str | None, payload: dict) -> None:
@@ -121,6 +124,12 @@ def run(
     """
     logger.log(1, f"[core] engine.run() got config: {config}")
 
+    restore_state = None
+    restore_file = getattr(config, "restore_file", None)
+    if restore_file:
+        restore_state = checkpoint.load_state(restore_file)
+        checkpoint.verify_fingerprint(restore_state, config)
+
     faketime_controller = None
     if config.faketime_timestamp_file:
         faketime_controller = FakeTimeController(
@@ -180,7 +189,13 @@ def run(
         config_file=getattr(config, "config_file", None),
         source_config_file=getattr(config, "source_config_file", None),
         trace_file=config.job_traces,
+        checkpoint_file=getattr(config, "checkpoint_file", None),
+        checkpoint_after_completions=getattr(config, "checkpoint_after_completions", 0),
+        checkpoint_config=config,
+        exec_validator=exec_validator,
     )
+    if restore_state is not None:
+        simulation.checkpoint_generation = int(restore_state.get("generation", 0))
 
     run_span_id = simulation.telemetry.start_span(
         "engine.run_total",
@@ -188,13 +203,14 @@ def run(
         trace_file=getattr(config, "job_traces", None),
     )
 
-    with simulation.telemetry.span("engine.adapter_setup"):
+    with simulation.telemetry.span("engine.adapter_setup", restore=restore_state is not None):
         adapter.open(simulation)
-        adapter.install_resources(config)
-        adapter.reload_scheduler(config)
-        adapter.register_exec_service()
-        adapter.arm_watchers()
-        adapter.register_job_tracking()
+        if restore_state is None:
+            adapter.install_resources(config)
+            adapter.reload_scheduler(config)
+            adapter.register_exec_service()
+            adapter.arm_watchers()
+            adapter.register_job_tracking()
 
     # adapter.configure_backend(config, simulation.start_job)
 
@@ -227,15 +243,29 @@ def run(
                 )
                 if config.exclusive:
                     job.set_exclusive(resource_cores_per_node, resource_gpus_per_node)
-        for job in jobs:
-            job.insert_apriori_events(simulation)
-    pbar = tqdm(total=len(jobs), desc="Jobs completed", unit="job", leave=True)
+        if restore_state is None:
+            for job in jobs:
+                job.insert_apriori_events(simulation)
+        else:
+            checkpoint.restore(simulation, jobs, restore_state, exec_validator=exec_validator)
+    pbar = tqdm(total=len(jobs), initial=simulation.num_complete,
+                desc="Jobs completed", unit="job", leave=True)
     simulation.progress = pbar
 
     # with tracer.start_as_current_span("simulation.advance"):
     try:
-        with simulation.telemetry.span("engine.prime_simulation"):
-            simulation.advance()
+        if restore_state is None:
+            with simulation.telemetry.span("engine.prime_simulation"):
+                simulation.advance()
+        else:
+            # The backend is brought back only now that every restored job is
+            # known: recovered allocations and reattach requests refer to them.
+            with simulation.telemetry.span("engine.restore_backend"):
+                adapter.restore_backend(
+                    config,
+                    restore_state,
+                    on_ready=simulation.resume_after_restore,
+                )
     except Exception as e:
         message = _finalize_failure(simulation) or str(e)
         logger.error("Simulation failed before reactor start: %s", message)
@@ -267,6 +297,17 @@ def run(
         _close_adapter(adapter)
         simulation.telemetry.close()
         return EngineResult(ok=False, message=message)
+
+    if simulation.checkpointed:
+        # Leave every job as it is: running jobs stay allocated in Flux and are
+        # reattached by the restored instance. No post-processing.
+        message = "Checkpointed generation {} at sim_time={} to {}".format(
+            simulation.checkpoint_generation, simulation.current_time, simulation.checkpoint_file)
+        simulation.telemetry.end_span(run_span_id, state="checkpointed")
+        _close_progress(simulation)
+        _close_adapter(adapter)
+        simulation.telemetry.close()
+        return EngineResult(ok=True, message=message, checkpointed=True)
 
     scheduler_metrics = _collect_scheduler_metrics(adapter)
     flux_module_stats = _collect_flux_module_stats(adapter)
@@ -442,6 +483,10 @@ class Simulation(object):
             config_file: str | None = None,
             source_config_file: str | None = None,
             trace_file: str | None = None,
+            checkpoint_file: str | None = None,
+            checkpoint_after_completions: int = 0,
+            checkpoint_config: object | None = None,
+            exec_validator: SimpleExec | None = None,
     ):
         self.event_list = event_list
         self.job_map = job_map
@@ -509,6 +554,20 @@ class Simulation(object):
         self.early_finalize_requested = False
         self.early_finalize_reason = ""
         self._finalize_check_counter = 0
+        # Checkpoint/restart. A checkpoint is only taken at a quiescent
+        # boundary, i.e. on the first pass through advance() after a confirmed
+        # quiescence reply, before the next bucket is popped.
+        self.checkpoint_file = checkpoint_file
+        self.checkpoint_after_completions = int(checkpoint_after_completions or 0)
+        self.checkpoint_config = checkpoint_config
+        self.exec_validator = exec_validator
+        self.checkpoint_generation = 0
+        self.checkpointed = False
+        self.checkpoint_reason = ""
+        self.start_seq = 0
+        self.restored_time_step = None
+        self._at_quiescent_boundary = False
+        self._checkpoint_check_counter = 0
         self.status_writer = status or RunStatusWriter(None)
         self.status_context = {
             "run_dir": str(Path(output_dir).resolve().parent) if output_dir else None,
@@ -1072,6 +1131,8 @@ class Simulation(object):
         self.final_quiescence_probe_sent = False
         job.real_start = time.time()
         self.num_started += 1
+        self.start_seq += 1
+        job.start_seq = self.start_seq
         with self.telemetry.span(
             "simulation.start_job",
             jobid=jobid,
@@ -1140,10 +1201,13 @@ class Simulation(object):
             job.record_state_transition("STARTED", start_time)
             job.queue_wait = job.queue_wait_time()
 
-            ct = models.qtime(job.complete_time)
-            cb = models.make_tagged_cb("complete", job, lambda: self.complete_job(job), ct)
-            self.event_list.add_event(ct, cb)
-            self.step_expect[ct]["finishes"] += 1
+            self.schedule_completion(job)
+
+    def schedule_completion(self, job):
+        ct = models.qtime(job.complete_time)
+        cb = models.make_tagged_cb("complete", job, lambda: self.complete_job(job), ct)
+        self.event_list.add_event(ct, cb)
+        self.step_expect[ct]["finishes"] += 1
 
     def complete_job(self, job):
         '''
@@ -1224,6 +1288,79 @@ class Simulation(object):
             return True
         return False
 
+    def checkpoint_sentinel_path(self):
+        """Sentinel the (unfaked) parent touches to request a checkpoint."""
+        if not self.output_dir:
+            return None
+        return Path(self.output_dir) / ".checkpoint_now"
+
+    def _checkpoint_due(self):
+        if not self.checkpoint_file:
+            return False
+        # Never checkpoint again before any progress since the last restore.
+        if self.restored_time_step is not None and self.time_step <= self.restored_time_step:
+            return False
+        if self.num_complete >= self.num_submits and not self.event_list:
+            return False
+        if (self.checkpoint_after_completions
+                and self.num_complete >= self.checkpoint_after_completions):
+            self.checkpoint_reason = "completed {} jobs (checkpoint_after_completions={})".format(
+                self.num_complete, self.checkpoint_after_completions)
+            return True
+        self._checkpoint_check_counter += 1
+        if self._checkpoint_check_counter % EARLY_FINALIZE_CHECK_EVERY:
+            return False
+        sentinel = self.checkpoint_sentinel_path()
+        if sentinel is not None and sentinel.exists():
+            try:
+                reason = sentinel.read_text(encoding="utf-8").strip()
+            except OSError:
+                reason = ""
+            self.checkpoint_reason = reason or "checkpoint requested"
+            return True
+        return False
+
+    def _checkpoint_and_stop(self):
+        self.checkpoint_generation += 1
+        with self.telemetry.span("simulation.checkpoint", sim_time=self.current_time,
+                                 time_step=self.time_step):
+            try:
+                backend_state = getattr(self.adapter, "checkpoint_backend_state", lambda: None)()
+                state = checkpoint.capture(
+                    self,
+                    config=self.checkpoint_config,
+                    reason=self.checkpoint_reason,
+                    generation=self.checkpoint_generation,
+                    exec_validator=self.exec_validator,
+                    backend_state=backend_state,
+                )
+                checkpoint.write_state(self.checkpoint_file, state)
+            except Exception as e:
+                self._fail("Checkpoint failed at sim_time={}: {}".format(self.current_time, e))
+                return
+        self.checkpointed = True
+        logger.warning(
+            "Checkpointed at sim_time=%s time_step=%d (%s): %d/%d jobs complete, %d running",
+            self.current_time, self.time_step, self.checkpoint_reason,
+            self.num_complete, self.jobs_total, len(state["running_jobids"]),
+        )
+        self.write_status_snapshot(state="checkpointed")
+        self.adapter.stop_reactor()
+
+    def resume_after_restore(self):
+        """
+        First step of a restored run: ask for quiescence at the checkpoint's
+        logical time, so whatever the restarted scheduler does with the
+        recovered queue settles before the clock moves.
+        """
+        if self.failed_reason:
+            return
+        try:
+            self._send_quiescence_probe()
+        except Exception as e:
+            self._fail("Quiescence query after restore failed at sim_time={}: {}"
+                       .format(self.current_time, e))
+
     def advance(self, *args, **kwargs):
         if self.failed_reason:
             return
@@ -1244,6 +1381,10 @@ class Simulation(object):
                 self.write_status_snapshot(state="running")
                 self.post_verification()
                 self.adapter.stop_reactor()
+                return
+            at_boundary, self._at_quiescent_boundary = self._at_quiescent_boundary, False
+            if at_boundary and self._checkpoint_due():
+                self._checkpoint_and_stop()
                 return
             events_at_time = []
 
@@ -1391,6 +1532,7 @@ class Simulation(object):
         self.job_manager_quiescent = True
         if self.failed_reason:
             return
+        self._at_quiescent_boundary = True
         self.advance()
 
 
