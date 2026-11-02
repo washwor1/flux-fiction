@@ -11,7 +11,6 @@
 
 struct emulator {
     flux_t *h;
-    flux_plugin_t *p;
 
     flux_msg_t *sim_req;
 
@@ -952,7 +951,6 @@ static void reset_cb(flux_t *h, flux_msg_handler_t *mh,
     bool keep_timestep = false;
     bool batch_job_starts = true;
     json_int_t carried_running = 0;
-    json_t *subscribe = NULL;
     bool log_enabled = emu ? emu->log_enabled : true;
     bool otel_enabled = emu ? emu->otel_enabled : false;
     const char *otel_socket = emu ? emu->otel_socket : NULL;
@@ -998,14 +996,13 @@ static void reset_cb(flux_t *h, flux_msg_handler_t *mh,
                 otel_service_name = otel_service_name_buf;
             }
             /* Restore support: jobs already running in a restarted instance
-             * count as started, and jobs recovered by the job-manager before
-             * this plugin was loaded never passed through job.new. */
+             * count as started. (Recovered jobs need no subscription here:
+             * jobtap load replays job.new for every active job, and
+             * cb_job_new subscribes them; subscribing again would deliver
+             * their events twice.) */
             json_t *cr = json_object_get(root, "carried_running");
             if (cr && json_is_integer(cr) && json_integer_value(cr) > 0)
                 carried_running = json_integer_value(cr);
-            json_t *sub = json_object_get(root, "subscribe");
-            if (sub && json_is_array(sub))
-                subscribe = json_incref(sub);
             json_decref(root);
         } else {
             // If payload is bad, just ignore and proceed with defaults.
@@ -1053,27 +1050,9 @@ static void reset_cb(flux_t *h, flux_msg_handler_t *mh,
     emu->batch_job_starts = batch_job_starts;
     if (carried_running > 0) {
         emu->tot_start = emu->wm_start = (unsigned long long)carried_running;
-    }
-    if (subscribe) {
-        size_t index;
-        json_t *value;
-        size_t failed = 0;
-        json_array_foreach(subscribe, index, value) {
-            if (!json_is_integer(value)
-                || flux_jobtap_job_subscribe(emu->p,
-                                             (flux_jobid_t)json_integer_value(value)) < 0)
-                failed++;
-        }
-        if (failed) {
-            json_decref(subscribe);
-            flux_respond_error(h, msg, EINVAL,
-                               "emu-jobtap: could not subscribe to every restored job");
-            return;
-        }
         if (emu->log_enabled)
-            flux_log(h, LOG_INFO, "emu-jobtap: subscribed %zu restored job(s), carried_running=%lld",
-                     json_array_size(subscribe), (long long)carried_running);
-        json_decref(subscribe);
+            flux_log(h, LOG_INFO, "emu-jobtap: carried_running=%lld",
+                     (long long)carried_running);
     }
     if (emu->log_enabled) {
         flux_log(h, LOG_INFO, "emu-jobtap: batch_job_starts=%d log_enabled=%d",
@@ -1100,7 +1079,6 @@ int flux_plugin_init (flux_plugin_t *p)
     );
     emu->timestep = 0;
     emu->h = flux_jobtap_get_flux(p);
-    emu->p = p;
     if (!emu->h) {
         emulator_destroy(emu);
         return -1;

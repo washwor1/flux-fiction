@@ -107,12 +107,9 @@ def reset_jobtap_plugin(
     otel_socket=None,
     otel_service_name="flux-fiction-jobtap",
     carried_running=0,
-    subscribe=None,
 ):
-    # carried_running and subscribe are only used when resuming a restarted
-    # instance: jobs that were already running count as started, and jobs the
-    # restarted job-manager created before the plugin was loaded are
-    # subscribed so their alloc/start events are counted.
+    # carried_running is only used when resuming a restarted instance: jobs
+    # that were already running count as started.
     payload = {
         "keep_timestep": keep_timestep,
         "batch_job_starts": batch_job_starts,
@@ -123,8 +120,6 @@ def reset_jobtap_plugin(
     }
     if carried_running:
         payload["carried_running"] = int(carried_running)
-    if subscribe:
-        payload["subscribe"] = [int(jobid) for jobid in subscribe]
     try:
         flux_handle.rpc(
             "job-manager.emu-jobtap.reset",
@@ -137,7 +132,7 @@ def reset_jobtap_plugin(
             otel_enabled,
         )
     except Exception as e:
-        if carried_running or subscribe:
+        if carried_running:
             # A restore that cannot account for its recovered jobs would hang
             # at the first quiescence barrier; fail now instead.
             raise RuntimeError(f"Failed to reset emu-jobtap for restore: {e}") from e

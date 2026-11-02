@@ -157,9 +157,9 @@ class FluxAdapter:
         scheduler and no exec service, so its job-manager holds every job but
         nothing has been scheduled or reattached yet. Order matters:
 
-          1. reset emu-jobtap, crediting the jobs that are already running and
-             subscribing to every recovered job (they were created before the
-             plugin was loaded, so job.new never subscribed them);
+          1. reset emu-jobtap, crediting the jobs that are already running
+             (loading the plugin replayed job.new for every recovered job, so
+             it is already subscribed to them);
           2. register sim-exec and arm its watchers, so reattach requests have
              a handler;
           3. load Fluxion, which rebuilds running allocations from their saved
@@ -170,7 +170,6 @@ class FluxAdapter:
         on_ready runs once every running job has been reattached.
         '''
         running = [int(j) for j in restore_state.get("running_jobids") or []]
-        pending = [int(j) for j in restore_state.get("pending_jobids") or []]
         expected = set(running)
         reattached: set[int] = set()
         ready_called = False
@@ -213,7 +212,6 @@ class FluxAdapter:
             otel_socket=self.simulation.otel_bridge_socket,
             otel_service_name=self.simulation.otel_service_name + "-jobtap",
             carried_running=len(running),
-            subscribe=sorted(expected | set(pending)),
         )
         self._watchers, self._services = watchers.setup_watchers(
             self._handle,
