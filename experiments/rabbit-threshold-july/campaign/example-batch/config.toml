@@ -1,0 +1,13 @@
+[flux_fiction]
+job_traces = "__LUSTRE5_ROOT__/flux-fiction-ensemble-tuo/rabbit-threshold-sweep-tuolumne/batches/b000002/generated/t000065__s91001__qeasy__mfirstnodex__rj070__rc040__dgaussian/trace.csv"
+resource_R = "__WORKSPACE_ROOT__/resource_graphs/tuolumne.json"
+config_json = "__LUSTRE5_ROOT__/flux-fiction-ensemble-tuo/rabbit-threshold-sweep-tuolumne/batches/b000002/generated/t000065__s91001__qeasy__mfirstnodex__rj070__rc040__dgaussian/scheduler.json"
+ncpus = 96
+ngpus = 4
+backend = "flux"
+quiet = true
+batch_job_starts = false
+account_system_latency = true
+jobtap_logging = false
+log_level = 40
+make_plots = false

@@ -1,0 +1,90 @@
+version = 1
+
+[parallel]
+max_concurrent = 16
+fail_fast = false
+progress_mode = "summary"
+default_no_faketime = false
+default_broker_log_level = 3
+output_root = "__LUSTRE5_ROOT__/flux-fiction-ensemble-tuo/rabbit-threshold-sweep-tuolumne/batches/b000002/parallel"
+summary_interval = 15.0
+
+[[run]]
+name = "t000065__s91001__qeasy__mfirstnodex__rj070__rc040__dgaussian"
+config_file = "__LUSTRE5_ROOT__/flux-fiction-ensemble-tuo/rabbit-threshold-sweep-tuolumne/batches/b000002/generated/t000065__s91001__qeasy__mfirstnodex__rj070__rc040__dgaussian/config.toml"
+metadata = { task_id = "t000065__s91001__qeasy__mfirstnodex__rj070__rc040__dgaussian", duplicate = "0", shake_seed = "91001", queue_policy = "easy", match_policy = "firstnodex", rabbit_job_percentage = "70.0", rabbit_ceiling_percentage = "40.0" }
+
+[[run]]
+name = "t000066__s91001__qeasy__mfirstnodex__rj070__rc050__dgaussian"
+config_file = "__LUSTRE5_ROOT__/flux-fiction-ensemble-tuo/rabbit-threshold-sweep-tuolumne/batches/b000002/generated/t000066__s91001__qeasy__mfirstnodex__rj070__rc050__dgaussian/config.toml"
+metadata = { task_id = "t000066__s91001__qeasy__mfirstnodex__rj070__rc050__dgaussian", duplicate = "0", shake_seed = "91001", queue_policy = "easy", match_policy = "firstnodex", rabbit_job_percentage = "70.0", rabbit_ceiling_percentage = "50.0" }
+
+[[run]]
+name = "t000067__s91001__qeasy__mfirstnodex__rj070__rc060__dgaussian"
+config_file = "__LUSTRE5_ROOT__/flux-fiction-ensemble-tuo/rabbit-threshold-sweep-tuolumne/batches/b000002/generated/t000067__s91001__qeasy__mfirstnodex__rj070__rc060__dgaussian/config.toml"
+metadata = { task_id = "t000067__s91001__qeasy__mfirstnodex__rj070__rc060__dgaussian", duplicate = "0", shake_seed = "91001", queue_policy = "easy", match_policy = "firstnodex", rabbit_job_percentage = "70.0", rabbit_ceiling_percentage = "60.0" }
+
+[[run]]
+name = "t000068__s91001__qeasy__mfirstnodex__rj070__rc070__dgaussian"
+config_file = "__LUSTRE5_ROOT__/flux-fiction-ensemble-tuo/rabbit-threshold-sweep-tuolumne/batches/b000002/generated/t000068__s91001__qeasy__mfirstnodex__rj070__rc070__dgaussian/config.toml"
+metadata = { task_id = "t000068__s91001__qeasy__mfirstnodex__rj070__rc070__dgaussian", duplicate = "0", shake_seed = "91001", queue_policy = "easy", match_policy = "firstnodex", rabbit_job_percentage = "70.0", rabbit_ceiling_percentage = "70.0" }
+
+[[run]]
+name = "t000069__s91001__qeasy__mfirstnodex__rj070__rc080__dgaussian"
+config_file = "__LUSTRE5_ROOT__/flux-fiction-ensemble-tuo/rabbit-threshold-sweep-tuolumne/batches/b000002/generated/t000069__s91001__qeasy__mfirstnodex__rj070__rc080__dgaussian/config.toml"
+metadata = { task_id = "t000069__s91001__qeasy__mfirstnodex__rj070__rc080__dgaussian", duplicate = "0", shake_seed = "91001", queue_policy = "easy", match_policy = "firstnodex", rabbit_job_percentage = "70.0", rabbit_ceiling_percentage = "80.0" }
+
+[[run]]
+name = "t000070__s91001__qeasy__mfirstnodex__rj070__rc090__dgaussian"
+config_file = "__LUSTRE5_ROOT__/flux-fiction-ensemble-tuo/rabbit-threshold-sweep-tuolumne/batches/b000002/generated/t000070__s91001__qeasy__mfirstnodex__rj070__rc090__dgaussian/config.toml"
+metadata = { task_id = "t000070__s91001__qeasy__mfirstnodex__rj070__rc090__dgaussian", duplicate = "0", shake_seed = "91001", queue_policy = "easy", match_policy = "firstnodex", rabbit_job_percentage = "70.0", rabbit_ceiling_percentage = "90.0" }
+
+[[run]]
+name = "t000071__s91001__qeasy__mfirstnodex__rj070__rc100__dgaussian"
+config_file = "__LUSTRE5_ROOT__/flux-fiction-ensemble-tuo/rabbit-threshold-sweep-tuolumne/batches/b000002/generated/t000071__s91001__qeasy__mfirstnodex__rj070__rc100__dgaussian/config.toml"
+metadata = { task_id = "t000071__s91001__qeasy__mfirstnodex__rj070__rc100__dgaussian", duplicate = "0", shake_seed = "91001", queue_policy = "easy", match_policy = "firstnodex", rabbit_job_percentage = "70.0", rabbit_ceiling_percentage = "100.0" }
+
+[[run]]
+name = "t000072__s91001__qeasy__mfirstnodex__rj080__rc010__dgaussian"
+config_file = "__LUSTRE5_ROOT__/flux-fiction-ensemble-tuo/rabbit-threshold-sweep-tuolumne/batches/b000002/generated/t000072__s91001__qeasy__mfirstnodex__rj080__rc010__dgaussian/config.toml"
+metadata = { task_id = "t000072__s91001__qeasy__mfirstnodex__rj080__rc010__dgaussian", duplicate = "0", shake_seed = "91001", queue_policy = "easy", match_policy = "firstnodex", rabbit_job_percentage = "80.0", rabbit_ceiling_percentage = "10.0" }
+
+[[run]]
+name = "t000073__s91001__qeasy__mfirstnodex__rj080__rc020__dgaussian"
+config_file = "__LUSTRE5_ROOT__/flux-fiction-ensemble-tuo/rabbit-threshold-sweep-tuolumne/batches/b000002/generated/t000073__s91001__qeasy__mfirstnodex__rj080__rc020__dgaussian/config.toml"
+metadata = { task_id = "t000073__s91001__qeasy__mfirstnodex__rj080__rc020__dgaussian", duplicate = "0", shake_seed = "91001", queue_policy = "easy", match_policy = "firstnodex", rabbit_job_percentage = "80.0", rabbit_ceiling_percentage = "20.0" }
+
+[[run]]
+name = "t000074__s91001__qeasy__mfirstnodex__rj080__rc030__dgaussian"
+config_file = "__LUSTRE5_ROOT__/flux-fiction-ensemble-tuo/rabbit-threshold-sweep-tuolumne/batches/b000002/generated/t000074__s91001__qeasy__mfirstnodex__rj080__rc030__dgaussian/config.toml"
+metadata = { task_id = "t000074__s91001__qeasy__mfirstnodex__rj080__rc030__dgaussian", duplicate = "0", shake_seed = "91001", queue_policy = "easy", match_policy = "firstnodex", rabbit_job_percentage = "80.0", rabbit_ceiling_percentage = "30.0" }
+
+[[run]]
+name = "t000075__s91001__qeasy__mfirstnodex__rj080__rc040__dgaussian"
+config_file = "__LUSTRE5_ROOT__/flux-fiction-ensemble-tuo/rabbit-threshold-sweep-tuolumne/batches/b000002/generated/t000075__s91001__qeasy__mfirstnodex__rj080__rc040__dgaussian/config.toml"
+metadata = { task_id = "t000075__s91001__qeasy__mfirstnodex__rj080__rc040__dgaussian", duplicate = "0", shake_seed = "91001", queue_policy = "easy", match_policy = "firstnodex", rabbit_job_percentage = "80.0", rabbit_ceiling_percentage = "40.0" }
+
+[[run]]
+name = "t000076__s91001__qeasy__mfirstnodex__rj080__rc050__dgaussian"
+config_file = "__LUSTRE5_ROOT__/flux-fiction-ensemble-tuo/rabbit-threshold-sweep-tuolumne/batches/b000002/generated/t000076__s91001__qeasy__mfirstnodex__rj080__rc050__dgaussian/config.toml"
+metadata = { task_id = "t000076__s91001__qeasy__mfirstnodex__rj080__rc050__dgaussian", duplicate = "0", shake_seed = "91001", queue_policy = "easy", match_policy = "firstnodex", rabbit_job_percentage = "80.0", rabbit_ceiling_percentage = "50.0" }
+
+[[run]]
+name = "t000077__s91001__qeasy__mfirstnodex__rj080__rc060__dgaussian"
+config_file = "__LUSTRE5_ROOT__/flux-fiction-ensemble-tuo/rabbit-threshold-sweep-tuolumne/batches/b000002/generated/t000077__s91001__qeasy__mfirstnodex__rj080__rc060__dgaussian/config.toml"
+metadata = { task_id = "t000077__s91001__qeasy__mfirstnodex__rj080__rc060__dgaussian", duplicate = "0", shake_seed = "91001", queue_policy = "easy", match_policy = "firstnodex", rabbit_job_percentage = "80.0", rabbit_ceiling_percentage = "60.0" }
+
+[[run]]
+name = "t000078__s91001__qeasy__mfirstnodex__rj080__rc070__dgaussian"
+config_file = "__LUSTRE5_ROOT__/flux-fiction-ensemble-tuo/rabbit-threshold-sweep-tuolumne/batches/b000002/generated/t000078__s91001__qeasy__mfirstnodex__rj080__rc070__dgaussian/config.toml"
+metadata = { task_id = "t000078__s91001__qeasy__mfirstnodex__rj080__rc070__dgaussian", duplicate = "0", shake_seed = "91001", queue_policy = "easy", match_policy = "firstnodex", rabbit_job_percentage = "80.0", rabbit_ceiling_percentage = "70.0" }
+
+[[run]]
+name = "t000079__s91001__qeasy__mfirstnodex__rj080__rc080__dgaussian"
+config_file = "__LUSTRE5_ROOT__/flux-fiction-ensemble-tuo/rabbit-threshold-sweep-tuolumne/batches/b000002/generated/t000079__s91001__qeasy__mfirstnodex__rj080__rc080__dgaussian/config.toml"
+metadata = { task_id = "t000079__s91001__qeasy__mfirstnodex__rj080__rc080__dgaussian", duplicate = "0", shake_seed = "91001", queue_policy = "easy", match_policy = "firstnodex", rabbit_job_percentage = "80.0", rabbit_ceiling_percentage = "80.0" }
+
+[[run]]
+name = "t000080__s91001__qeasy__mfirstnodex__rj080__rc090__dgaussian"
+config_file = "__LUSTRE5_ROOT__/flux-fiction-ensemble-tuo/rabbit-threshold-sweep-tuolumne/batches/b000002/generated/t000080__s91001__qeasy__mfirstnodex__rj080__rc090__dgaussian/config.toml"
+metadata = { task_id = "t000080__s91001__qeasy__mfirstnodex__rj080__rc090__dgaussian", duplicate = "0", shake_seed = "91001", queue_policy = "easy", match_policy = "firstnodex", rabbit_job_percentage = "80.0", rabbit_ceiling_percentage = "90.0" }

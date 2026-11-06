@@ -1,0 +1,104 @@
+FROM ubuntu:24.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV LC_ALL=C
+ENV LANG=C
+ENV PATH=/usr/local/bin:/usr/bin:/bin:$PATH
+ENV CC=gcc-12
+ENV CXX=g++-12
+
+RUN echo 'APT::Sandbox::User root;' > /etc/apt/apt.conf.d/00-apt-sandbox && \
+    apt-get update && \
+    apt-get install -y \
+        autoconf \
+        automake \
+        libtool \
+        build-essential \
+        make \
+        cmake \
+        meson \
+        ninja-build \
+        pkg-config \
+        gcc \
+        g++ \
+        gcc-12 \
+        g++-12 \
+        cpp-12 \
+        gfortran \
+        git \
+        wget \
+        curl \
+        vim \
+        less \
+        file \
+        jq \
+        ca-certificates \
+        time \
+        valgrind \
+        aspell \
+        aspell-en \
+        fakeroot \
+        libfaketime \
+        libc6-dev \
+        libzmq3-dev \
+        uuid-dev \
+        libjansson-dev \
+        liblz4-dev \
+        libarchive-dev \
+        libhwloc-dev \
+        libsqlite3-dev \
+        lua5.1 \
+        liblua5.1-dev \
+        lua-posix \
+        python3 \
+        python3-dev \
+        python3-pip \
+        python3-venv \
+        python3-cffi \
+        python3-ply \
+        python3-setuptools \
+        python3-yaml \
+        python3-sphinx \
+        python3-wheel \
+        python3-pytest \
+        python3-pytest-cov \
+        python3-matplotlib \
+        python3-tqdm \
+        python3-pydantic \
+        python3-tomli \
+        python3-jsonschema \
+        libmpich-dev \
+        libboost-dev \
+        libboost-graph-dev \
+        libedit-dev \
+        libyaml-cpp-dev \
+        tmux \
+        strace && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/*
+
+RUN python3 -m pip install --break-system-packages --ignore-installed \
+        build \
+        meson-python \
+        opentelemetry-api \
+        opentelemetry-sdk \
+        opentelemetry-exporter-otlp-proto-http \
+        "dftracer @ git+https://github.com/LLNL/dftracer.git@develop"
+
+RUN mkdir -p /work /data /output /scratch
+
+COPY scripts/flux-dev-env.sh /usr/local/bin/flux-dev-env.sh
+COPY scripts/build-flux-core.sh /usr/local/bin/build-flux-core.sh
+COPY scripts/build-flux-sched.sh /usr/local/bin/build-flux-sched.sh
+COPY scripts/build-flux-fiction.sh /usr/local/bin/build-flux-fiction.sh
+COPY scripts/build-flux-stack.sh /usr/local/bin/build-flux-stack.sh
+COPY scripts/flux-dev-profile.sh /etc/profile.d/flux-dev.sh
+
+RUN chmod +x \
+    /usr/local/bin/flux-dev-env.sh \
+    /usr/local/bin/build-flux-core.sh \
+    /usr/local/bin/build-flux-sched.sh \
+    /usr/local/bin/build-flux-fiction.sh \
+    /usr/local/bin/build-flux-stack.sh
+
+CMD ["/bin/bash", "-l"]

@@ -1,0 +1,124 @@
+{
+  "campaign": {
+    "batch_size": 8,
+    "broker_log_level": 3,
+    "finalize_reserve_seconds": 900.0,
+    "flux_launch": false,
+    "flux_launch_cores": null,
+    "host_jobtap_cc": null,
+    "host_tmpdir": null,
+    "keep_generated_traces": false,
+    "meson_pythonpath": null,
+    "name": "rabbit-threshold-sweep-corona",
+    "no_broker_log_file": true,
+    "no_faketime": false,
+    "output_root": "__LUSTRE1_ROOT__/flux-fiction-ensemble-corona",
+    "poll_interval_seconds": 120.0,
+    "spack_faketime_prefix": null,
+    "spack_fluxion_prefix": null,
+    "spack_gcc_runtime": null,
+    "spack_ninja_prefix": null,
+    "spack_view": null,
+    "walltime_minutes": 1440,
+    "worker_runtime": "container"
+  },
+  "flux": {
+    "base_config": "__WORKSPACE_ROOT__/flux-fiction-accuracy-tests/configs/tuo_pbatch.toml",
+    "base_config_json": "__WORKSPACE_ROOT__/flux-fiction-accuracy-tests/configs/tuo_pbatch_scheduler.json",
+    "config_overrides": {
+      "make_plots": false
+    },
+    "resource_R": "__WORKSPACE_ROOT__/resource_graphs/tuolumne.json",
+    "resource_file": null
+  },
+  "grid": {
+    "collapse_zero_rabbit": true,
+    "match_policies": [
+      "firstnodex",
+      "lonodex"
+    ],
+    "queue_policies": [
+      "easy",
+      "hybrid",
+      "conservative"
+    ],
+    "rabbit_ceiling_percentages": [
+      0.0,
+      10.0,
+      20.0,
+      30.0,
+      40.0,
+      50.0,
+      60.0,
+      70.0,
+      80.0,
+      90.0,
+      100.0
+    ],
+    "rabbit_distributions": [
+      "gaussian",
+      "pareto"
+    ],
+    "rabbit_job_percentages": [
+      0.0,
+      10.0,
+      20.0,
+      30.0,
+      40.0,
+      50.0,
+      60.0,
+      70.0,
+      80.0,
+      90.0,
+      100.0
+    ]
+  },
+  "input": {
+    "cpus_per_node": 96,
+    "slice_count": 10000,
+    "slice_start": 0,
+    "trace": "__WORKSPACE_ROOT__/tuo_queueB_10k_sat.csv",
+    "trace_format": "tuolumne"
+  },
+  "path": "__WORKSPACE_ROOT__/flux-fiction-develop/test-inputs/ensemble-rabbit-threshold-sweep.toml",
+  "rabbit": {
+    "capacity_gib": 1174176.0,
+    "ceiling_basis": "rabbit_node",
+    "distribution": "uniform",
+    "field_name": "RabbitGiB",
+    "mean_fraction": 0.5,
+    "per_rabbit_gib": 16308.0,
+    "sigma_fraction": 0.16666666666666666,
+    "tail_alpha": 1.5,
+    "tail_min_gib": 100.0
+  },
+  "shake": {
+    "attributes": [
+      "interarrival",
+      "runtime",
+      "nodes"
+    ],
+    "degree_seconds": 60.0,
+    "duplicates": 10,
+    "job_percentage": 10.0,
+    "max_nodes": 1153,
+    "relative_cap_percent": null,
+    "relative_degree_percent": 10.0,
+    "seed": 91001
+  },
+  "submission": {
+    "backend": "flux",
+    "job_name_prefix": "ffe-rt",
+    "queue_limits": {
+      "pbatch": {
+        "max_active": 16,
+        "max_submit_per_hour": null,
+        "name": "pbatch"
+      }
+    },
+    "queues": [
+      "pbatch"
+    ]
+  },
+  "version": 1
+}

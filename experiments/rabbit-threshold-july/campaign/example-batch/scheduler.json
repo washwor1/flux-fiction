@@ -1,0 +1,31 @@
+{
+  "policy": {
+    "jobspec": {
+      "defaults": {
+        "system": {
+          "queue": "pbatch"
+        }
+      }
+    }
+  },
+  "queues": {
+    "pbatch": {
+      "requires": [
+        "pbatch"
+      ]
+    }
+  },
+  "sched-fluxion-qmanager": {
+    "policy-params": {
+      "reservation-depth": 128
+    },
+    "queue-params": {
+      "queue-depth": 2048
+    },
+    "queue-policy": "easy"
+  },
+  "sched-fluxion-resource": {
+    "match-format": "rv1_shorthand",
+    "match-policy": "firstnodex"
+  }
+}

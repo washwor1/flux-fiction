@@ -1,0 +1,14 @@
+[flux_fiction]
+job_traces = "/workspace/tuo_pbatch.csv"
+resource_R = "/workspace/resource_graphs/tuolumne.json"
+config_json = "/workspace/flux-fiction-accuracy-tests/configs/tuo_pbatch_scheduler.json"
+ncpus = 96
+ngpus = 4
+backend = "flux"
+quiet = true
+batch_job_starts = false
+account_system_latency = true
+jobtap_logging = false
+# ERROR only. At the default 10 (DEBUG) emu.log reached ~41 MB per replica and
+# competes with the simulation for Lustre bandwidth. Failures still surface.
+log_level = 40

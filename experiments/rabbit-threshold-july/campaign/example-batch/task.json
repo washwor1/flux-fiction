@@ -1,0 +1,17 @@
+{
+  "duplicate": 0,
+  "generated_config": "__LUSTRE5_ROOT__/flux-fiction-ensemble-tuo/rabbit-threshold-sweep-tuolumne/batches/b000002/generated/t000065__s91001__qeasy__mfirstnodex__rj070__rc040__dgaussian/config.toml",
+  "generated_scheduler_config": "__LUSTRE5_ROOT__/flux-fiction-ensemble-tuo/rabbit-threshold-sweep-tuolumne/batches/b000002/generated/t000065__s91001__qeasy__mfirstnodex__rj070__rc040__dgaussian/scheduler.json",
+  "generated_trace": "__LUSTRE5_ROOT__/flux-fiction-ensemble-tuo/rabbit-threshold-sweep-tuolumne/batches/b000002/generated/t000065__s91001__qeasy__mfirstnodex__rj070__rc040__dgaussian/trace.csv",
+  "match_policy": "firstnodex",
+  "ordinal": 65,
+  "queue_policy": "easy",
+  "rabbit_active": true,
+  "rabbit_ceiling_percentage": 40.0,
+  "rabbit_distribution": "gaussian",
+  "rabbit_job_percentage": 70.0,
+  "rabbit_seed": 8533061988578728782,
+  "shake_seed": 91001,
+  "task_id": "t000065__s91001__qeasy__mfirstnodex__rj070__rc040__dgaussian",
+  "trace_rows": 10000
+}
